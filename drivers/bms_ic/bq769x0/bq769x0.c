@@ -67,12 +67,6 @@ struct bms_ic_bq769x0_data
         float chg_ut_limit;
         float temp_limit_hyst;
 
-#ifdef CONFIG_BMS_IC_CURRENT_MONITORING
-        /* Current limits */
-        float chg_oc_limit;
-        uint32_t chg_oc_delay_ms;
-#endif
-
         /* Balancing settings */
         float bal_cell_voltage_diff;
         float bal_cell_voltage_min;
@@ -309,16 +303,6 @@ static int bq769x0_configure_temp_limits(const struct device *dev, struct bms_ic
 
 #ifdef CONFIG_BMS_IC_CURRENT_MONITORING
 
-static int bq769x0_configure_chg_ocp(const struct device *dev, struct bms_ic_conf *ic_conf)
-{
-    struct bms_ic_bq769x0_data *dev_data = dev->data;
-
-    dev_data->ic_conf.chg_oc_limit = ic_conf->chg_oc_limit;
-    dev_data->ic_conf.chg_oc_delay_ms = ic_conf->chg_oc_delay_ms;
-
-    return 0;
-}
-
 static int bq769x0_configure_dis_ocp(const struct device *dev, struct bms_ic_conf *ic_conf)
 {
     const struct bms_ic_bq769x0_config *dev_config = dev->config;
@@ -449,7 +433,6 @@ static int bms_ic_bq769x0_configure(const struct device *dev, struct bms_ic_conf
 
 #ifdef CONFIG_BMS_IC_CURRENT_MONITORING
     if (flags & BMS_IC_CONF_CURRENT_LIMITS) {
-        err |= bq769x0_configure_chg_ocp(dev, ic_conf);
         err |= bq769x0_configure_dis_ocp(dev, ic_conf);
         err |= bq769x0_configure_dis_scp(dev, ic_conf);
         actual_flags |= BMS_IC_CONF_CURRENT_LIMITS;
@@ -629,11 +612,6 @@ static int bq769x0_read_error_flags(const struct device *dev, struct bms_ic_data
     error_flags |= (sys_stat.OV * UINT32_MAX) & BMS_ERR_CELL_OVERVOLTAGE;
     error_flags |= (sys_stat.SCD * UINT32_MAX) & BMS_ERR_SHORT_CIRCUIT;
     error_flags |= (sys_stat.OCD * UINT32_MAX) & BMS_ERR_DIS_OVERCURRENT;
-
-    if (ic_data->current > dev_data->ic_conf.chg_oc_limit) {
-        /* ToDo: consider ic_conf->chg_oc_delay */
-        error_flags |= BMS_ERR_CHG_OVERCURRENT;
-    }
 
     hyst = (ic_data->error_flags & BMS_ERR_CHG_OVERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
     if (ic_data->cell_temp_max > dev_data->ic_conf.chg_ot_limit - hyst) {

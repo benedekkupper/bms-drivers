@@ -147,7 +147,7 @@ struct bms_ic_data
     float cell_voltage_avg;
     /** Battery internal stack voltage (V) */
     float total_voltage;
-#ifdef CONFIG_BMS_IC_SWITCHES
+#if CONFIG_BMS_IC_SWITCHES && CONFIG_BMS_IC_BQ769X2
     /** Battery external pack voltage (V) */
     float external_voltage;
 #endif
@@ -167,7 +167,7 @@ struct bms_ic_data
     float cell_temp_avg;
     /** Internal BMS IC temperature (°C) */
     float ic_temp;
-#ifdef CONFIG_BMS_IC_SWITCHES
+#if CONFIG_BMS_IC_SWITCHES && (CONFIG_BMS_IC_BQ769X2 || CONFIG_BMS_IC_ISL94202)
     /** MOSFET temperature (°C) */
     float mosfet_temp;
 #endif

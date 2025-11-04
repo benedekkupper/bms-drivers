@@ -679,7 +679,9 @@ static void bq769x0_alert_handler(struct k_work *work)
 
     /* get new current reading if available */
     if (sys_stat.CC_READY == 1) {
+#ifdef CONFIG_BMS_IC_CURRENT_MONITORING
         bq769x0_read_current(dev, ic_data);
+#endif /* CONFIG_BMS_IC_CURRENT_MONITORING */
         err = bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_CC_READY);
         if (err != 0) {
             LOG_ERR("Failed to clear CC_READY flag");
@@ -1069,7 +1071,7 @@ static const struct bms_ic_driver_api bq769x0_driver_api = {
         .num_sections = COND_CODE_0( \
             DT_INST_PROP(index, used_cell_channels) & ~0x001F, (1), \
             (COND_CODE_0(DT_INST_PROP(index, used_cell_channels) & ~0x03FF, (2), (3)))), \
-        .bus_pchg_gpio = GPIO_DT_SPEC_INST_GET(index, bus_pchg_gpios), \
+        .bus_pchg_gpio = GPIO_DT_SPEC_INST_GET_OR(index, bus_pchg_gpios, {0}), \
         .shunt_resistor_uohm = DT_INST_PROP_OR(index, shunt_resistor_uohm, 1000), \
         .board_max_current = DT_INST_PROP_OR(index, board_max_current, 0), \
         .thermistor_beta = DT_INST_PROP(index, thermistor_beta), \

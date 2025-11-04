@@ -86,14 +86,14 @@
 
 // maps for settings in protection registers
 static const uint16_t bq769x0_scd_delays[4] = { 70, 100, 200, 400 };                       // us
-static const uint16_t bq769x0_scd_thresholds[8] = { 44, 67, 89, 111, 133, 155, 178, 200 }; // mV
+static const uint8_t bq769x0_scd_thresholds[8] = { 44, 67, 89, 111, 133, 155, 178, 200 }; // mV
 
 static const uint16_t bq769x0_ocd_delays[8] = { 8, 20, 40, 80, 160, 320, 640, 1280 }; // ms
-static const uint16_t bq769x0_ocd_thresholds[16] = { 17, 22, 28, 33, 39, 44, 50, 56,
+static const uint8_t bq769x0_ocd_thresholds[16] = { 17, 22, 28, 33, 39, 44, 50, 56,
                                                      61, 67, 72, 78, 83, 89, 94, 100 }; // mV
 
-static const uint16_t bq769x0_uv_delays[4] = { 1, 4, 8, 16 }; // s
-static const uint16_t bq769x0_ov_delays[4] = { 1, 2, 4, 8 };  // s
+static const uint8_t bq769x0_uv_delays[4] = { 1, 4, 8, 16 }; // s
+static const uint8_t bq769x0_ov_delays[4] = { 1, 2, 4, 8 };  // s
 
 union bq769x0_sys_stat {
     struct

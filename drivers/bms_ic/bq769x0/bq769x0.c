@@ -26,7 +26,7 @@
 
 LOG_MODULE_REGISTER(bms_ic_bq769x0, CONFIG_BMS_IC_LOG_LEVEL);
 
-#define BQ769X0_READ_MAX_ATTEMPTS (10)
+#define BQ769X0_READ_MAX_ATTEMPTS (3)
 
 /* read-only driver configuration */
 struct bms_ic_bq769x0_config
@@ -187,14 +187,14 @@ static int bq769x0_detect_crc(const struct device *dev)
     int err = 0;
 
     dev_data->crc_enabled = true;
-    err |= bq769x0_write_byte(dev, BQ769X0_CC_CFG, 0x19);
+    err = bq769x0_write_byte(dev, BQ769X0_CC_CFG, 0x19);
     err |= bq769x0_read_byte(dev, BQ769X0_CC_CFG, &cc_cfg);
     if (err == 0 && cc_cfg == 0x19) {
         return 0;
     }
 
     dev_data->crc_enabled = false;
-    err |= bq769x0_write_byte(dev, BQ769X0_CC_CFG, 0x19);
+    err = bq769x0_write_byte(dev, BQ769X0_CC_CFG, 0x19);
     err |= bq769x0_read_byte(dev, BQ769X0_CC_CFG, &cc_cfg);
     if (err == 0 && cc_cfg == 0x19) {
         return 0;

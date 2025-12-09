@@ -62,60 +62,60 @@ enum bms_ic_mode
 struct bms_ic_conf
 {
     /* Cell voltage limits */
-    /** Cell target charge voltage (V) */
-    float cell_chg_voltage_limit;
-    /** Cell discharge voltage limit (V) */
-    float cell_dis_voltage_limit;
-    /** Cell over-voltage limit (V) */
-    float cell_ov_limit;
-    /** Cell over-voltage error reset threshold (V) */
-    float cell_ov_reset;
+    /** Cell target charge voltage (mV) */
+    uint32_t cell_chg_voltage_limit_mV;
+    /** Cell discharge voltage limit (mV) */
+    uint32_t cell_dis_voltage_limit_mV;
+    /** Cell over-voltage limit (mV) */
+    uint32_t cell_ov_limit_mV;
+    /** Cell over-voltage error reset threshold (mV) */
+    uint32_t cell_ov_reset_mV;
     /** Cell over-voltage delay (ms) */
     uint32_t cell_ov_delay_ms;
-    /** Cell under-voltage limit (V) */
-    float cell_uv_limit;
-    /** Cell under-voltage error reset threshold (V)*/
-    float cell_uv_reset;
+    /** Cell under-voltage limit (mV) */
+    uint32_t cell_uv_limit_mV;
+    /** Cell under-voltage error reset threshold (mV)*/
+    uint32_t cell_uv_reset_mV;
     /** Cell under-voltage delay (ms) */
     uint32_t cell_uv_delay_ms;
 
 #ifdef CONFIG_BMS_IC_CURRENT_MONITORING
     /* Current limits */
-    /** Charge over-current limit (A) */
-    float chg_oc_limit;
+    /** Charge over-current limit (mA) */
+    uint32_t chg_oc_limit_mA;
     /** Charge over-current delay (ms) */
     uint32_t chg_oc_delay_ms;
-    /** Discharge over-current limit (A) */
-    float dis_oc_limit;
+    /** Discharge over-current limit (mA) */
+    uint32_t dis_oc_limit_mA;
     /** Discharge over-current delay (ms) */
     uint32_t dis_oc_delay_ms;
-    /** Discharge short circuit limit (A) */
-    float dis_sc_limit;
+    /** Discharge short circuit limit (mA) */
+    uint32_t dis_sc_limit_mA;
     /** Discharge short circuit delay (us) */
     uint32_t dis_sc_delay_us;
 #endif
 
     /* Cell temperature limits */
     /** Discharge over-temperature (DOT) limit (°C) */
-    float dis_ot_limit;
+    int8_t dis_ot_limit;
     /** Discharge under-temperature (DUT) limit (°C) */
-    float dis_ut_limit;
+    int8_t dis_ut_limit;
     /** Charge over-temperature (COT) limit (°C) */
-    float chg_ot_limit;
+    int8_t chg_ot_limit;
     /** Charge under-temperature (CUT) limit (°C) */
-    float chg_ut_limit;
+    int8_t chg_ut_limit;
     /** Temperature limit hysteresis (°C) */
-    float temp_limit_hyst;
+    int8_t temp_limit_hyst;
 
     /* Balancing settings */
-    /** Balancing cell voltage target difference (V) */
-    float bal_cell_voltage_diff;
-    /** Minimum cell voltage to start balancing (V) */
-    float bal_cell_voltage_min;
-    /** Current threshold to be considered idle (A) */
-    float bal_idle_current;
+    /** Balancing cell voltage target difference (mV) */
+    uint32_t bal_cell_voltage_diff_mV;
+    /** Minimum cell voltage to start balancing (mV) */
+    uint32_t bal_cell_voltage_min_mV;
+    /** Current threshold to be considered idle (mA) */
+    uint32_t bal_idle_current_mA;
     /** Minimum idle duration before balancing (s) */
-    uint16_t bal_idle_delay;
+    uint16_t bal_idle_delay_s;
     /** Enable/disable automatic balancing (controlled by the IC or driver) */
     bool auto_balancing;
 
@@ -137,39 +137,39 @@ struct bms_ic_conf
  */
 struct bms_ic_data
 {
-    /** Single cell voltages (V) */
-    float cell_voltages[CONFIG_BMS_IC_MAX_CELLS];
-    /** Maximum cell voltage (V) */
-    float cell_voltage_max;
-    /** Minimum cell voltage (V) */
-    float cell_voltage_min;
-    /** Average cell voltage (V) */
-    float cell_voltage_avg;
-    /** Battery internal stack voltage (V) */
-    float total_voltage;
+    /** Single cell voltages (mV) */
+    uint32_t cell_voltages[CONFIG_BMS_IC_MAX_CELLS];
+    /** Maximum cell voltage (mV) */
+    uint32_t cell_voltage_max;
+    /** Minimum cell voltage (mV) */
+    uint32_t cell_voltage_min;
+    /** Average cell voltage (mV) */
+    uint32_t cell_voltage_avg;
+    /** Battery internal stack voltage (mV) */
+    uint32_t total_voltage;
 #if CONFIG_BMS_IC_SWITCHES && CONFIG_BMS_IC_BQ769X2
-    /** Battery external pack voltage (V) */
-    float external_voltage;
+    /** Battery external pack voltage (mV) */
+    uint32_t external_voltage;
 #endif
 
 #ifdef CONFIG_BMS_IC_CURRENT_MONITORING
-    /** Module/pack current, charging direction has positive sign (A) */
-    float current;
+    /** Module/pack current, charging direction has positive sign (mA) */
+    int32_t current;
 #endif
 
     /** Cell temperatures (°C) */
-    float cell_temps[CONFIG_BMS_IC_MAX_THERMISTORS];
+    int8_t cell_temps[CONFIG_BMS_IC_MAX_THERMISTORS];
     /** Maximum cell temperature (°C) */
-    float cell_temp_max;
+    int8_t cell_temp_max;
     /** Minimum cell temperature (°C) */
-    float cell_temp_min;
+    int8_t cell_temp_min;
     /** Average cell temperature (°C) */
-    float cell_temp_avg;
+    int8_t cell_temp_avg;
     /** Internal BMS IC temperature (°C) */
-    float ic_temp;
+    int8_t ic_temp;
 #if CONFIG_BMS_IC_SWITCHES && (CONFIG_BMS_IC_BQ769X2 || CONFIG_BMS_IC_ISL94202)
     /** MOSFET temperature (°C) */
-    float mosfet_temp;
+    int8_t mosfet_temp;
 #endif
 
     /** Actual number of cells connected (may be less than CONFIG_BMS_IC_MAX_CELLS) */
@@ -191,7 +191,7 @@ struct bms_ic_data
  * Zephyr driver API function pointer declarations (see further down for documentation)
  */
 
-typedef int (*bms_ic_api_configure)(const struct device *dev, struct bms_ic_conf *ic_conf,
+typedef int (*bms_ic_api_configure)(const struct device *dev, const struct bms_ic_conf *ic_conf,
                                     uint32_t flags);
 
 typedef void (*bms_ic_api_assign_data)(const struct device *dev, struct bms_ic_data *ic_data);
@@ -244,7 +244,7 @@ __subsystem struct bms_ic_driver_api
  * @retval -ENOTSUP if none of the requested flags is supported
  * @retval -EIO for communication error
  */
-static inline int bms_ic_configure(const struct device *dev, struct bms_ic_conf *ic_conf,
+static inline int bms_ic_configure(const struct device *dev, const struct bms_ic_conf *ic_conf,
                                    uint32_t flags)
 {
     const struct bms_ic_driver_api *api = (const struct bms_ic_driver_api *)dev->api;

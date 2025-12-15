@@ -39,7 +39,8 @@ extern "C" {
 #define BMS_IC_DATA_CURRENT       BIT(3)
 #define BMS_IC_DATA_BALANCING     BIT(4)
 #define BMS_IC_DATA_ERROR_FLAGS   BIT(5)
-#define BMS_IC_DATA_ALL           GENMASK(5, 0)
+#define BMS_IC_DATA_SWITCH_STATE  BIT(6)
+#define BMS_IC_DATA_ALL           GENMASK(6, 0)
 
 /**
  * BMS IC operation modes
@@ -170,6 +171,9 @@ struct bms_ic_data
 #if CONFIG_BMS_IC_SWITCHES && (CONFIG_BMS_IC_BQ769X2 || CONFIG_BMS_IC_ISL94202)
     /** MOSFET temperature (°C) */
     int8_t mosfet_temp;
+#endif
+#ifdef CONFIG_BMS_IC_SWITCHES
+    uint8_t active_switches;
 #endif
 
     /** Actual number of cells connected (may be less than CONFIG_BMS_IC_MAX_CELLS) */

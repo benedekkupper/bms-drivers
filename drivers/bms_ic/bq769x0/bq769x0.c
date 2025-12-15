@@ -784,6 +784,16 @@ static int bms_ic_bq769x0_read_data(const struct device *dev, uint32_t flags)
         actual_flags |= BMS_IC_DATA_ERROR_FLAGS;
     }
 
+#ifdef CONFIG_BMS_IC_SWITCHES
+    if (flags & BMS_IC_DATA_SWITCH_STATE) {
+        union bq769x0_sys_ctrl2 sys_ctrl2;
+        err |= bq769x0_read_byte(dev, BQ769X0_SYS_CTRL2, &sys_ctrl2.byte);
+        ic_data->active_switches = (sys_ctrl2.CHG_ON ? BMS_SWITCH_CHG : 0)
+                                   | (sys_ctrl2.DSG_ON ? BMS_SWITCH_DIS : 0);
+        actual_flags |= BMS_IC_DATA_SWITCH_STATE;
+    }
+#endif
+
     if (err != 0) {
         return -EIO;
     }

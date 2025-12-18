@@ -71,7 +71,7 @@ struct bms_ic_bq769x0_data
         uint32_t bal_cell_voltage_diff;
         uint32_t bal_cell_voltage_min;
         uint32_t bal_idle_current;
-        uint16_t bal_idle_delay;
+        uint32_t bal_idle_delay;
         bool auto_balancing;
 
         uint32_t alert_mask;
@@ -216,19 +216,17 @@ static int bq769x0_configure_cell_vp(const struct device *dev, const struct bms_
         return err;
     }
 
-    ov_trip = (((ic_conf->cell_ov_limit_mV - dev_data->adc_offset) * 1000
-                / dev_data->adc_gain)
-               >> 4)
-              & 0x00FF;
+    ov_trip =
+        (((ic_conf->cell_ov_limit_mV - dev_data->adc_offset) * 1000 / dev_data->adc_gain) >> 4)
+        & 0x00FF;
     err = bq769x0_write_byte(dev, BQ769X0_OV_TRIP, ov_trip);
     if (err != 0) {
         return err;
     }
 
-    uv_trip = (((ic_conf->cell_uv_limit_mV - dev_data->adc_offset) * 1000
-                / dev_data->adc_gain)
-               >> 4)
-              & 0x00FF;
+    uv_trip =
+        (((ic_conf->cell_uv_limit_mV - dev_data->adc_offset) * 1000 / dev_data->adc_gain) >> 4)
+        & 0x00FF;
     uv_trip += 1; /* always round up for lower cell voltage */
     err = bq769x0_write_byte(dev, BQ769X0_UV_TRIP, uv_trip);
     if (err != 0) {
@@ -286,7 +284,8 @@ static int bq769x0_get_cell_vp(const struct device *dev, struct bms_ic_conf *ic_
 }
 #endif
 
-static int bq769x0_configure_temp_limits(const struct device *dev, const struct bms_ic_conf *ic_conf)
+static int bq769x0_configure_temp_limits(const struct device *dev,
+                                         const struct bms_ic_conf *ic_conf)
 {
     struct bms_ic_bq769x0_data *dev_data = dev->data;
 
@@ -411,7 +410,7 @@ static int bq769x0_configure_balancing(const struct device *dev, const struct bm
     dev_data->ic_conf.bal_cell_voltage_diff = ic_conf->bal_cell_voltage_diff_mV;
     dev_data->ic_conf.bal_cell_voltage_min = ic_conf->bal_cell_voltage_min_mV;
     dev_data->ic_conf.bal_idle_current = ic_conf->bal_idle_current_mA;
-    dev_data->ic_conf.bal_idle_delay = ic_conf->bal_idle_delay_s;
+    dev_data->ic_conf.bal_idle_delay = ic_conf->bal_idle_delay_s * 1000;
     dev_data->ic_conf.auto_balancing = ic_conf->auto_balancing;
 
     if (ic_conf->auto_balancing) {
@@ -491,8 +490,7 @@ static int bq769x0_read_cell_voltages(const struct device *dev, struct bms_ic_da
         }
 
         adc_raw &= 0x3FFF;
-        ic_data->cell_voltages[i] =
-            adc_raw * dev_data->adc_gain / 1000 + dev_data->adc_offset;
+        ic_data->cell_voltages[i] = adc_raw * dev_data->adc_gain / 1000 + dev_data->adc_offset;
 
         if (ic_data->cell_voltages[i] > 500) {
             conn_cells++;
@@ -524,8 +522,8 @@ static int bq769x0_read_total_voltages(const struct device *dev, struct bms_ic_d
         return err;
     }
 
-    ic_data->total_voltage = 4 * dev_data->adc_gain * adc_raw / 1000
-                            + ic_data->connected_cells * dev_data->adc_offset;
+    ic_data->total_voltage =
+        4 * dev_data->adc_gain * adc_raw / 1000 + ic_data->connected_cells * dev_data->adc_offset;
 
     return 0;
 }
@@ -589,7 +587,7 @@ static int bq769x0_read_current(const struct device *dev, struct bms_ic_data *ic
     struct bms_ic_bq769x0_data *dev_data = dev->data;
     int16_t adc_raw;
 
-    int err = bq769x0_read_word(dev, BQ769X0_CC_HI_BYTE, (uint16_t*)&adc_raw);
+    int err = bq769x0_read_word(dev, BQ769X0_CC_HI_BYTE, (uint16_t *)&adc_raw);
     if (err != 0) {
         LOG_ERR("Error reading current measurement");
         return err;
@@ -707,14 +705,14 @@ static void bq769x0_alert_handler(struct k_work *work)
             }
         }
         if (sys_stat.UV) {
-            bms_ic_read_data(dev, BMS_IC_DATA_CELL_VOLTAGES);
+            bq769x0_read_cell_voltages(dev, ic_data);
             if (ic_data->cell_voltage_min > dev_data->ic_conf.cell_uv_reset) {
                 LOG_DBG("Attempting to clear UV error");
                 err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_UV);
             }
         }
         if (sys_stat.OV) {
-            bms_ic_read_data(dev, BMS_IC_DATA_CELL_VOLTAGES);
+            bq769x0_read_cell_voltages(dev, ic_data);
             if (ic_data->cell_voltage_max < dev_data->ic_conf.cell_ov_reset) {
                 LOG_DBG("Attempting to clear OV error");
                 err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_OV);
@@ -788,8 +786,8 @@ static int bms_ic_bq769x0_read_data(const struct device *dev, uint32_t flags)
     if (flags & BMS_IC_DATA_SWITCH_STATE) {
         union bq769x0_sys_ctrl2 sys_ctrl2;
         err |= bq769x0_read_byte(dev, BQ769X0_SYS_CTRL2, &sys_ctrl2.byte);
-        ic_data->active_switches = (sys_ctrl2.CHG_ON ? BMS_SWITCH_CHG : 0)
-                                   | (sys_ctrl2.DSG_ON ? BMS_SWITCH_DIS : 0);
+        ic_data->active_switches =
+            (sys_ctrl2.CHG_ON ? BMS_SWITCH_CHG : 0) | (sys_ctrl2.DSG_ON ? BMS_SWITCH_DIS : 0);
         actual_flags |= BMS_IC_DATA_SWITCH_STATE;
     }
 #endif
@@ -875,7 +873,7 @@ static void bq769x0_balancing_work_handler(struct k_work *work)
     struct bms_ic_data *ic_data = dev_data->ic_data;
     int err;
 
-    if (k_uptime_get() - dev_data->active_timestamp >= dev_data->ic_conf.bal_idle_delay
+    if (k_uptime_delta(&dev_data->active_timestamp) >= dev_data->ic_conf.bal_idle_delay
         && ic_data->cell_voltage_max > dev_data->ic_conf.bal_cell_voltage_min
         && (ic_data->cell_voltage_max - ic_data->cell_voltage_min)
                > dev_data->ic_conf.bal_cell_voltage_diff)
@@ -1000,9 +998,10 @@ static int bq769x0_activate(const struct device *dev)
         return err;
     }
 
-    gpio_pin_configure_dt(&dev_config->alert_gpio, GPIO_INPUT);
+    err = gpio_pin_configure_dt(&dev_config->alert_gpio, GPIO_INPUT);
+    err = gpio_pin_interrupt_configure_dt(&dev_config->alert_gpio, GPIO_INT_EDGE_TO_ACTIVE);
     gpio_init_callback(&dev_data->alert_cb, bq769x0_alert_isr, BIT(dev_config->alert_gpio.pin));
-    gpio_add_callback_dt(&dev_config->alert_gpio, &dev_data->alert_cb);
+    err = gpio_add_callback_dt(&dev_config->alert_gpio, &dev_data->alert_cb);
 
     /* run processing once at start-up to check and clear errors */
     k_work_schedule(&dev_data->alert_work, K_NO_WAIT);
@@ -1078,7 +1077,7 @@ static const struct bms_ic_driver_api bq769x0_driver_api = {
         .num_sections = COND_CODE_0( \
             DT_INST_PROP(index, used_cell_channels) & ~0x001F, (1), \
             (COND_CODE_0(DT_INST_PROP(index, used_cell_channels) & ~0x03FF, (2), (3)))), \
-        .bus_pchg_gpio = GPIO_DT_SPEC_INST_GET_OR(index, bus_pchg_gpios, {0}), \
+        .bus_pchg_gpio = GPIO_DT_SPEC_INST_GET_OR(index, bus_pchg_gpios, { 0 }), \
         .shunt_resistor_uohm = DT_INST_PROP_OR(index, shunt_resistor_uohm, 1000), \
         .board_max_current = DT_INST_PROP_OR(index, board_max_current, 0), \
         .thermistor_beta = DT_INST_PROP(index, thermistor_beta), \

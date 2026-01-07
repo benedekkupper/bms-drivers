@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include <zephyr/device.h>
+#include <zephyr/drivers/adc.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/logging/log.h>
@@ -33,11 +34,15 @@ struct bms_ic_bq769x0_config
 {
     struct i2c_dt_spec i2c;
     struct gpio_dt_spec alert_gpio;
+    struct gpio_dt_spec ntc_en_gpio;
     uint32_t shunt_resistor_uohm;
     uint32_t board_max_current;
-    uint16_t thermistor_beta;
+    float thermistor_beta;
     uint8_t used_cell_count;
     uint8_t num_sections;
+    uint8_t num_thermistors;
+    const struct adc_dt_spec *extra_ntc_channels;
+    uint8_t num_extra_thermistors;
 };
 
 /* driver run-time data */
@@ -78,6 +83,8 @@ struct bms_ic_bq769x0_data
     int64_t active_timestamp;
     int error_seconds_counter;
     uint32_t balancing_status;
+    uint32_t adc_channels;
+    float adc_lsb_mV;
     bool crc_enabled;
 };
 
@@ -524,23 +531,57 @@ static int bq769x0_read_total_voltages(const struct device *dev, struct bms_ic_d
 static int bq769x0_read_temperatures(const struct device *dev, struct bms_ic_data *ic_data)
 {
     const struct bms_ic_bq769x0_config *dev_config = dev->config;
+    struct bms_ic_bq769x0_data *dev_data = dev->data;
     float tmp = 0;
-    uint16_t adc_raw = 0;
+    uint16_t adc_raw[CONFIG_BMS_IC_MAX_THERMISTORS] = { 0 };
     int vtsx = 0;
     unsigned long rts = 0;
-    float sum_temps = 0;
-    int num_temps = 0;
+    float sum_temps = 0.0F;
     int err;
 
-    for (int i = 0; i < dev_config->num_sections && i < CONFIG_BMS_IC_MAX_THERMISTORS; i++) {
-        /* calculate R_thermistor according to bq769x0 datasheet */
-        err = bq769x0_read_word(dev, BQ769X0_TS1_HI_BYTE + i * 2, &adc_raw);
+    /* power the external NTCs only for the duration of the measurement,
+     * to avoid self-heating */
+    if (gpio_is_ready_dt(&dev_config->ntc_en_gpio)) {
+        gpio_pin_set_dt(&dev_config->ntc_en_gpio, 1);
+        k_sleep(K_MSEC(1));
+    }
+
+    /* read thermistor values from BMS IC (new sample is taken every 2s) */
+    for (int i = 0; i < dev_config->num_thermistors; i++) {
+        err = bq769x0_read_word(dev, BQ769X0_TS1_HI_BYTE + i * 2, &adc_raw[i]);
         if (err != 0) {
             return err;
         }
+    }
+    /* read extra thermistor values from ADC */
+    if (dev_config->num_extra_thermistors) {
+        struct adc_sequence sequence = {
+            .channels = dev_data->adc_channels,
+            .buffer = &adc_raw[dev_config->num_thermistors],
+            .buffer_size = dev_config->num_extra_thermistors * sizeof(uint16_t),
+            .resolution = dev_config->extra_ntc_channels[0].resolution,
+            .oversampling = dev_config->extra_ntc_channels[0].oversampling,
+        };
 
-        adc_raw &= 0x3FFF;
-        vtsx = adc_raw * 0.382F;                  /* mV */
+        err = adc_read_dt(dev_config->extra_ntc_channels, &sequence);
+        if (err != 0) {
+            LOG_ERR("ADC read error for extra thermistors: %d", err);
+            return err;
+        }
+    }
+
+    if (gpio_is_ready_dt(&dev_config->ntc_en_gpio)) {
+        gpio_pin_set_dt(&dev_config->ntc_en_gpio, 0);
+    }
+
+    for (int i = 0; i < (dev_config->num_thermistors + dev_config->num_extra_thermistors); i++) {
+        if (i < dev_config->num_thermistors) {
+            adc_raw[i] &= 0x3FFF;
+            vtsx = adc_raw[i] * 0.382F; /* mV */
+        }
+        else {
+            vtsx = (float)adc_raw[i] * dev_data->adc_lsb_mV; /* mV */
+        }
         rts = 10000.0F * vtsx / (3300.0F - vtsx); /* Ohm */
 
         /*
@@ -548,10 +589,11 @@ static int bq769x0_read_temperatures(const struct device *dev, struct bms_ic_dat
          * - According to bq769x0 datasheet, only 10k thermistors should be used
          * - 25°C reference temperature for Beta equation assumed
          */
-        tmp = 1.0F
-              / (1.0F / (273.15F + 25) + 1.0F / dev_config->thermistor_beta * logf(rts / 10000.0F));
+        tmp =
+            1.0F
+            / (1.0F / (273.15F + 25.F) + 1.0F / dev_config->thermistor_beta * logf(rts / 10000.0F));
         tmp -= 273.15F;
-        ic_data->cell_temps[i] = tmp;
+        ic_data->cell_temps[i] = tmp + 0.5F; /* round to nearest integer */
         if (i == 0) {
             ic_data->cell_temp_min = ic_data->cell_temps[i];
             ic_data->cell_temp_max = ic_data->cell_temps[i];
@@ -564,10 +606,10 @@ static int bq769x0_read_temperatures(const struct device *dev, struct bms_ic_dat
                 ic_data->cell_temp_max = ic_data->cell_temps[i];
             }
         }
-        num_temps++;
         sum_temps += tmp;
     }
-    ic_data->cell_temp_avg = sum_temps / num_temps;
+    ic_data->cell_temp_avg =
+        sum_temps / (float)(dev_config->num_thermistors + dev_config->num_extra_thermistors) + 0.5F;
 
     return 0;
 }
@@ -955,7 +997,7 @@ static int bq769x0_activate(const struct device *dev)
     int err;
 
     /* Datasheet: 10 ms delay (t_BOOTREADY) */
-    k_sleep(K_TIMEOUT_ABS_MS(10));
+    k_sleep(K_MSEC(10));
 
     err = bq769x0_detect_crc(dev);
     if (err == 0) {
@@ -965,8 +1007,12 @@ static int bq769x0_activate(const struct device *dev)
 
         /* switch external thermistor and ADC on */
         err |= bq769x0_write_byte(dev, BQ769X0_SYS_CTRL1, 0b00011000);
+#ifdef CONFIG_BMS_IC_CURRENT_MONITORING
         /* switch CC_EN on */
         err |= bq769x0_write_byte(dev, BQ769X0_SYS_CTRL2, 0b01000000);
+#else
+        err |= bq769x0_write_byte(dev, BQ769X0_SYS_CTRL2, 0b00000000);
+#endif
 
         /* get ADC offset (2's complement) and gain */
         err |= bq769x0_read_byte(dev, BQ769X0_ADCOFFSET, &adcoffset);
@@ -1032,9 +1078,56 @@ static int bq769x0_init(const struct device *dev)
 
     dev_data->dev = dev;
     dev_data->ic_data.connected_cells = dev_config->used_cell_count;
+    dev_data->ic_data.used_thermistors =
+        dev_config->num_thermistors + dev_config->num_extra_thermistors;
 
     k_work_init_delayable(&dev_data->alert_work, bq769x0_alert_handler);
     k_work_init_delayable(&dev_data->balancing_work, bq769x0_balancing_work_handler);
+
+    for (int i = 0; i < dev_config->num_extra_thermistors; i++) {
+        if (!adc_is_ready_dt(&dev_config->extra_ntc_channels[i])) {
+            LOG_ERR("Extra NTC ADC channel %d not ready", i);
+            return -ENODEV;
+        }
+        if ((dev_config->extra_ntc_channels[i].dev != dev_config->extra_ntc_channels[0].dev)
+            || (dev_config->extra_ntc_channels[i].resolution
+                != dev_config->extra_ntc_channels[0].resolution)
+            || (dev_config->extra_ntc_channels[i].oversampling
+                != dev_config->extra_ntc_channels[0].oversampling))
+        {
+            LOG_ERR("All NTC ADC channels share the same configuration values");
+            return -EINVAL;
+        }
+        int err = adc_channel_setup_dt(&dev_config->extra_ntc_channels[i]);
+        if (err < 0) {
+            LOG_ERR("Could not setup channel #%d (%d)\n", i, err);
+            return err;
+        }
+        dev_data->adc_channels |= BIT(dev_config->extra_ntc_channels[i].channel_id);
+    }
+
+    if (dev_config->num_extra_thermistors) {
+        const struct adc_dt_spec *spec = &dev_config->extra_ntc_channels[0];
+        float vref_mv;
+
+        if (spec->channel_cfg_dt_node_exists && (spec->channel_cfg.reference == ADC_REF_INTERNAL)) {
+            vref_mv = (float)adc_ref_internal(spec->dev);
+        }
+        else if (spec->vref_mv) {
+            vref_mv = (float)spec->vref_mv;
+        }
+        else {
+            vref_mv = 3300.0F;
+        }
+        dev_data->adc_lsb_mV = vref_mv / (float)((1 << spec->resolution) - 1);
+    }
+
+    if (gpio_is_ready_dt(&dev_config->ntc_en_gpio)) {
+        int err = gpio_pin_configure_dt(&dev_config->ntc_en_gpio, GPIO_OUTPUT_INACTIVE);
+        if (err < 0) {
+            return err;
+        }
+    }
 
     return 0;
 }
@@ -1057,18 +1150,29 @@ static const struct bms_ic_driver_api bq769x0_driver_api = {
 
 #define BQ769X0_NUM_SECTIONS(index) ((DT_INST_PROP(index, used_cell_count) + 4) / 5)
 
+#define DT_SPEC_AND_COMMA(node_id, prop, idx) ADC_DT_SPEC_GET_BY_IDX(node_id, idx)
+
 #define BQ769X0_INIT(index) \
     static struct bms_ic_bq769x0_data bq769x0_data_##index = { 0 }; \
     BQ769X0_ASSERT_CURRENT_MONITORING_PROP_GREATER_ZERO(index, shunt_resistor_uohm); \
     BQ769X0_ASSERT_CURRENT_MONITORING_PROP_GREATER_ZERO(index, board_max_current); \
+    IF_ENABLED( \
+        DT_INST_NODE_HAS_PROP(index, io_channels), \
+        (static const struct adc_dt_spec bq769x0_extra_ntc_##index[] = { \
+             DT_INST_FOREACH_PROP_ELEM_SEP(index, io_channels, DT_SPEC_AND_COMMA, (, )) };)) \
     static const struct bms_ic_bq769x0_config bq769x0_config_##index = { \
         .i2c = I2C_DT_SPEC_INST_GET(index), \
         .alert_gpio = GPIO_DT_SPEC_INST_GET(index, alert_gpios), \
+        .ntc_en_gpio = GPIO_DT_SPEC_INST_GET_OR(index, ntc_enable_gpios, { 0 }), \
         .shunt_resistor_uohm = DT_INST_PROP_OR(index, shunt_resistor_uohm, 1000), \
         .board_max_current = DT_INST_PROP_OR(index, board_max_current, 0), \
-        .thermistor_beta = DT_INST_PROP(index, thermistor_beta), \
+        .thermistor_beta = (float)DT_INST_PROP(index, thermistor_beta), \
         .used_cell_count = DT_INST_PROP(index, used_cell_count), \
         .num_sections = BQ769X0_NUM_SECTIONS(index), \
+        .num_thermistors = MIN(CONFIG_BMS_IC_MAX_THERMISTORS, BQ769X0_NUM_SECTIONS(index)), \
+        IF_ENABLED(DT_INST_NODE_HAS_PROP(index, io_channels), \
+                   (.extra_ntc_channels = bq769x0_extra_ntc_##index, )) \
+            .num_extra_thermistors = DT_INST_PROP_LEN_OR(index, io_channels, 0), \
     }; \
     DEVICE_DT_INST_DEFINE(index, &bq769x0_init, NULL, &bq769x0_data_##index, \
                           &bq769x0_config_##index, POST_KERNEL, CONFIG_BMS_IC_INIT_PRIORITY, \

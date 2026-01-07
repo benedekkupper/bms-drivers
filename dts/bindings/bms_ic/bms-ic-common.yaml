@@ -1,7 +1,7 @@
 # Copyright (c) The Libre Solar Project Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-description: Intersil/Renesas ISL94202 Standalone 3 to 8 Cell Li-Ion Battery Pack Monitor
+description: Common properties for battery management ICs
 
 properties:
   shunt-resistor-uohm:
@@ -13,3 +13,16 @@ properties:
     type: int
     description: |
       Maximum current allowed by the board design in Amperes.
+
+  io-channels:
+    type: phandle-array
+    required: false
+    description: |
+      List of extra NTCs that are connected to ADC channels of the MCU.
+      Each entry is a phandle to an ADC controller plus the channel number.
+
+  ntc-enable-gpios:
+    type: phandle-array
+    required: false
+    description: |
+      GPIO to power the NTCs.

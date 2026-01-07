@@ -43,7 +43,7 @@ struct bms_ic_bq769x0_config
 /* driver run-time data */
 struct bms_ic_bq769x0_data
 {
-    struct bms_ic_data *ic_data;
+    struct bms_ic_data ic_data;
     const struct device *dev;
     struct k_work_delayable alert_work;
     struct k_work_delayable balancing_work;
@@ -659,7 +659,7 @@ static void bq769x0_alert_handler(struct k_work *work)
     struct bms_ic_bq769x0_data *dev_data =
         CONTAINER_OF(dwork, struct bms_ic_bq769x0_data, alert_work);
     const struct device *dev = dev_data->dev;
-    struct bms_ic_data *ic_data = dev_data->ic_data;
+    struct bms_ic_data *ic_data = &dev_data->ic_data;
     int err;
 
     /* ToDo: Handle also temperature and chg errors (incl. temp hysteresis) */
@@ -742,12 +742,15 @@ static void bq769x0_alert_handler(struct k_work *work)
     }
 }
 
-static int bms_ic_bq769x0_read_data(const struct device *dev, uint32_t flags)
+static int bms_ic_bq769x0_read_data(const struct device *dev, struct bms_ic_data **data_ptr,
+                                    uint32_t flags)
 {
     struct bms_ic_bq769x0_data *dev_data = dev->data;
-    struct bms_ic_data *ic_data = dev_data->ic_data;
+    struct bms_ic_data *ic_data = &dev_data->ic_data;
     uint32_t actual_flags = 0;
     int err = 0;
+
+    *data_ptr = ic_data;
 
     if (flags & BMS_IC_DATA_CELL_VOLTAGES) {
         err |= bq769x0_read_cell_voltages(dev, ic_data);
@@ -796,13 +799,6 @@ static int bms_ic_bq769x0_read_data(const struct device *dev, uint32_t flags)
     }
 
     return (flags == actual_flags) ? 0 : -EINVAL;
-}
-
-static void bms_ic_bq769x0_assign_data(const struct device *dev, struct bms_ic_data *ic_data)
-{
-    struct bms_ic_bq769x0_data *dev_data = dev->data;
-
-    dev_data->ic_data = ic_data;
 }
 
 #ifdef CONFIG_BMS_IC_SWITCHES
@@ -869,7 +865,7 @@ static void bq769x0_balancing_work_handler(struct k_work *work)
         CONTAINER_OF(dwork, struct bms_ic_bq769x0_data, balancing_work);
     const struct device *dev = dev_data->dev;
     const struct bms_ic_bq769x0_config *dev_config = dev->config;
-    struct bms_ic_data *ic_data = dev_data->ic_data;
+    struct bms_ic_data *ic_data = &dev_data->ic_data;
     int err;
 
     if (k_uptime_delta(&dev_data->active_timestamp) >= dev_data->ic_conf.bal_idle_delay
@@ -1050,7 +1046,6 @@ static int bq769x0_init(const struct device *dev)
 
 static const struct bms_ic_driver_api bq769x0_driver_api = {
     .configure = bms_ic_bq769x0_configure,
-    .assign_data = bms_ic_bq769x0_assign_data,
     .read_data = bms_ic_bq769x0_read_data,
 #ifdef CONFIG_BMS_IC_SWITCHES
     .set_switches = bms_ic_bq769x0_set_switches,

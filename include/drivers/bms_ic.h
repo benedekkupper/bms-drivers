@@ -198,9 +198,8 @@ struct bms_ic_data
 typedef int (*bms_ic_api_configure)(const struct device *dev, const struct bms_ic_conf *ic_conf,
                                     uint32_t flags);
 
-typedef void (*bms_ic_api_assign_data)(const struct device *dev, struct bms_ic_data *ic_data);
-
-typedef int (*bms_ic_api_read_data)(const struct device *dev, uint32_t flags);
+typedef int (*bms_ic_api_read_data)(const struct device *dev, struct bms_ic_data **data_ptr,
+                                    uint32_t flags);
 
 typedef int (*bms_ic_api_set_switches)(const struct device *dev, uint8_t switches, bool enabled);
 
@@ -219,7 +218,6 @@ typedef int (*bms_ic_api_debug_print_mem)(const struct device *dev);
 __subsystem struct bms_ic_driver_api
 {
     bms_ic_api_configure configure;
-    bms_ic_api_assign_data assign_data;
     bms_ic_api_read_data read_data;
     bms_ic_api_set_switches set_switches;
     bms_ic_api_balance balance;
@@ -261,28 +259,12 @@ static inline int bms_ic_configure(const struct device *dev, const struct bms_ic
 }
 
 /**
- * @brief Assign bms_ic_data object to use for reading data from the IC.
- *
- * This data is updated by calls to @a bms_ic_read_data.
- *
- * @param dev Pointer to the device structure for the driver instance.
- * @param ic_data Pointer to a statically allocated bms_ic_data object.
- *
- * @return 0 for success or negative error code otherwise.
- */
-static inline void bms_ic_assign_data(const struct device *dev, struct bms_ic_data *ic_data)
-{
-    const struct bms_ic_driver_api *api = (const struct bms_ic_driver_api *)dev->api;
-
-    api->assign_data(dev, ic_data);
-}
-
-/**
  * @brief Read data from the IC.
  *
  * @a bms_ic_assign_data must be called before using this function.
  *
  * @param dev Pointer to the device structure for the driver instance.
+ * @param data_ptr Pointer to store the address of the data structure.
  * @param flags Flags to specify which parts of the data should be updated. See BMS_IC_DATA_*
  *              defines for valid flags.
  *
@@ -291,11 +273,12 @@ static inline void bms_ic_assign_data(const struct device *dev, struct bms_ic_da
  * @retval -EIO for communication error
  * @retval -ENOMEM if the data was not assigned with @a bms_ic_assign_data
  */
-static inline int bms_ic_read_data(const struct device *dev, uint32_t flags)
+static inline int bms_ic_read_data(const struct device *dev, struct bms_ic_data **data_ptr,
+                                   uint32_t flags)
 {
     const struct bms_ic_driver_api *api = (const struct bms_ic_driver_api *)dev->api;
 
-    return api->read_data(dev, flags);
+    return api->read_data(dev, data_ptr, flags);
 }
 
 #ifdef CONFIG_BMS_IC_SWITCHES

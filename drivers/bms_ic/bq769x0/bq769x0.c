@@ -33,7 +33,6 @@ struct bms_ic_bq769x0_config
 {
     struct i2c_dt_spec i2c;
     struct gpio_dt_spec alert_gpio;
-    struct gpio_dt_spec bus_pchg_gpio;
     uint32_t shunt_resistor_uohm;
     uint32_t board_max_current;
     uint16_t used_cell_channels;
@@ -1077,7 +1076,6 @@ static const struct bms_ic_driver_api bq769x0_driver_api = {
         .num_sections = COND_CODE_0( \
             DT_INST_PROP(index, used_cell_channels) & ~0x001F, (1), \
             (COND_CODE_0(DT_INST_PROP(index, used_cell_channels) & ~0x03FF, (2), (3)))), \
-        .bus_pchg_gpio = GPIO_DT_SPEC_INST_GET_OR(index, bus_pchg_gpios, { 0 }), \
         .shunt_resistor_uohm = DT_INST_PROP_OR(index, shunt_resistor_uohm, 1000), \
         .board_max_current = DT_INST_PROP_OR(index, board_max_current, 0), \
         .thermistor_beta = DT_INST_PROP(index, thermistor_beta), \

@@ -24,12 +24,6 @@ properties:
       bq76930 (6-10s): 0b0000_0011_1111_1111 = 0x03FF
       bq76940 (9-15s): 0b0111_1111_1111_1111 = 0x7FFF
 
-  bus-pchg-gpios:
-    type: phandle-array
-    required: false
-    description: |
-      GPIO to enable/disable the bus pre-charge MOSFET.
-
   thermistor-beta:
     type: int
     default: 3435

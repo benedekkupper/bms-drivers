@@ -13,16 +13,11 @@ properties:
     required: true
     description: Alert interrupt of bq769x0
 
-  used-cell-channels:
+  used-cell-count:
     type: int
     required: true
     description: |
-      Bitset of cell channels used by the board. See below examples for the maximum number of
-      cells supported by the different chips:
-
-      bq76920 (3-5s):  0b0000_0000_0001_1111 = 0x001F
-      bq76930 (6-10s): 0b0000_0011_1111_1111 = 0x03FF
-      bq76940 (9-15s): 0b0111_1111_1111_1111 = 0x7FFF
+      Number of cell channels used by the board.
 
   thermistor-beta:
     type: int

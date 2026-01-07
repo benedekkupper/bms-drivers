@@ -35,8 +35,8 @@ struct bms_ic_bq769x0_config
     struct gpio_dt_spec alert_gpio;
     uint32_t shunt_resistor_uohm;
     uint32_t board_max_current;
-    uint16_t used_cell_channels;
     uint16_t thermistor_beta;
+    uint8_t used_cell_count;
     uint8_t num_sections;
 };
 
@@ -76,7 +76,6 @@ struct bms_ic_bq769x0_data
         uint32_t alert_mask;
     } ic_conf;
     int64_t active_timestamp;
-    union bq769x0_sys_stat sys_stat_prev;
     int error_seconds_counter;
     uint32_t balancing_status;
     bool crc_enabled;
@@ -477,12 +476,11 @@ static int bq769x0_read_cell_voltages(const struct device *dev, struct bms_ic_da
     const struct bms_ic_bq769x0_config *dev_config = dev->config;
     struct bms_ic_bq769x0_data *dev_data = dev->data;
     uint16_t adc_raw;
-    int conn_cells = 0;
     uint32_t sum_voltages = 0;
     uint32_t v_max = 0, v_min = 10000;
     int err;
 
-    for (int i = 0; i < dev_config->num_sections * 5; i++) {
+    for (int i = 0; i < dev_config->used_cell_count; i++) {
         err = bq769x0_read_word(dev, BQ769X0_VC1_HI_BYTE + i * 2, &adc_raw);
         if (err != 0) {
             return err;
@@ -490,11 +488,7 @@ static int bq769x0_read_cell_voltages(const struct device *dev, struct bms_ic_da
 
         adc_raw &= 0x3FFF;
         ic_data->cell_voltages[i] = adc_raw * dev_data->adc_gain / 1000 + dev_data->adc_offset;
-
-        if (ic_data->cell_voltages[i] > 500) {
-            conn_cells++;
-            sum_voltages += ic_data->cell_voltages[i];
-        }
+        sum_voltages += ic_data->cell_voltages[i];
         if (ic_data->cell_voltages[i] > v_max) {
             v_max = ic_data->cell_voltages[i];
         }
@@ -502,8 +496,7 @@ static int bq769x0_read_cell_voltages(const struct device *dev, struct bms_ic_da
             v_min = ic_data->cell_voltages[i];
         }
     }
-    ic_data->connected_cells = conn_cells;
-    ic_data->cell_voltage_avg = sum_voltages / conn_cells;
+    ic_data->cell_voltage_avg = sum_voltages / dev_config->used_cell_count;
     ic_data->cell_voltage_min = v_min;
     ic_data->cell_voltage_max = v_max;
 
@@ -512,6 +505,7 @@ static int bq769x0_read_cell_voltages(const struct device *dev, struct bms_ic_da
 
 static int bq769x0_read_total_voltages(const struct device *dev, struct bms_ic_data *ic_data)
 {
+    const struct bms_ic_bq769x0_config *dev_config = dev->config;
     struct bms_ic_bq769x0_data *dev_data = dev->data;
     uint16_t adc_raw;
     int err;
@@ -521,8 +515,8 @@ static int bq769x0_read_total_voltages(const struct device *dev, struct bms_ic_d
         return err;
     }
 
-    ic_data->total_voltage =
-        4 * dev_data->adc_gain * adc_raw / 1000 + ic_data->connected_cells * dev_data->adc_offset;
+    ic_data->total_voltage = 4 * dev_data->adc_gain * adc_raw / 1000
+                             + dev_config->used_cell_count * dev_data->adc_offset;
 
     return 0;
 }
@@ -1037,6 +1031,7 @@ static int bq769x0_init(const struct device *dev)
     }
 
     dev_data->dev = dev;
+    dev_data->ic_data.connected_cells = dev_config->used_cell_count;
 
     k_work_init_delayable(&dev_data->alert_work, bq769x0_alert_handler);
     k_work_init_delayable(&dev_data->balancing_work, bq769x0_balancing_work_handler);
@@ -1060,6 +1055,8 @@ static const struct bms_ic_driver_api bq769x0_driver_api = {
                  "Devicetree properties shunt-resistor-uohm and board-max-current " \
                  "must be greater than 0 for CONFIG_BMS_IC_CURRENT_MONITORING=y")
 
+#define BQ769X0_NUM_SECTIONS(index) ((DT_INST_PROP(index, used_cell_count) + 4) / 5)
+
 #define BQ769X0_INIT(index) \
     static struct bms_ic_bq769x0_data bq769x0_data_##index = { 0 }; \
     BQ769X0_ASSERT_CURRENT_MONITORING_PROP_GREATER_ZERO(index, shunt_resistor_uohm); \
@@ -1067,13 +1064,11 @@ static const struct bms_ic_driver_api bq769x0_driver_api = {
     static const struct bms_ic_bq769x0_config bq769x0_config_##index = { \
         .i2c = I2C_DT_SPEC_INST_GET(index), \
         .alert_gpio = GPIO_DT_SPEC_INST_GET(index, alert_gpios), \
-        .used_cell_channels = DT_INST_PROP(index, used_cell_channels), \
-        .num_sections = COND_CODE_0( \
-            DT_INST_PROP(index, used_cell_channels) & ~0x001F, (1), \
-            (COND_CODE_0(DT_INST_PROP(index, used_cell_channels) & ~0x03FF, (2), (3)))), \
         .shunt_resistor_uohm = DT_INST_PROP_OR(index, shunt_resistor_uohm, 1000), \
         .board_max_current = DT_INST_PROP_OR(index, board_max_current, 0), \
         .thermistor_beta = DT_INST_PROP(index, thermistor_beta), \
+        .used_cell_count = DT_INST_PROP(index, used_cell_count), \
+        .num_sections = BQ769X0_NUM_SECTIONS(index), \
     }; \
     DEVICE_DT_INST_DEFINE(index, &bq769x0_init, NULL, &bq769x0_data_##index, \
                           &bq769x0_config_##index, POST_KERNEL, CONFIG_BMS_IC_INIT_PRIORITY, \

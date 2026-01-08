@@ -27,7 +27,8 @@
 
 LOG_MODULE_REGISTER(bms_ic_bq769x0, CONFIG_BMS_IC_LOG_LEVEL);
 
-#define BQ769X0_READ_MAX_ATTEMPTS (3)
+#define BQ769X0_READ_MAX_ATTEMPTS      (3)
+#define BQ769X0_TEMPERATURE_INTERVAL_S (2)
 
 /* read-only driver configuration */
 struct bms_ic_bq769x0_config
@@ -65,23 +66,22 @@ struct bms_ic_bq769x0_data
         uint32_t cell_uv_reset;
 
         /* Cell temperature limits */
-        int8_t dis_ot_limit;
-        int8_t dis_ut_limit;
-        int8_t chg_ot_limit;
-        int8_t chg_ut_limit;
+        int8_t overtemp_limit;
+        int8_t undertemp_limit;
         int8_t temp_limit_hyst;
 
         /* Balancing settings */
+        bool auto_balancing;
         uint32_t bal_cell_voltage_diff;
         uint32_t bal_cell_voltage_min;
         uint32_t bal_idle_current;
         uint32_t bal_idle_delay;
-        bool auto_balancing;
 
-        uint32_t alert_mask;
+        bms_ic_event_callback_t event_callback;
     } ic_conf;
     int64_t active_timestamp;
-    int error_seconds_counter;
+    uint32_t error_timestamp_s;
+    uint32_t poll_timestamp_s;
     uint32_t balancing_status;
     uint32_t adc_channels;
     float adc_lsb_mV;
@@ -89,6 +89,10 @@ struct bms_ic_bq769x0_data
 };
 
 static int bq769x0_set_balancing_switches(const struct device *dev, uint32_t cells);
+static int bq769x0_activate(const struct device *dev);
+#ifdef CONFIG_BMS_IC_SWITCHES
+static int bms_ic_bq769x0_set_switches(const struct device *dev, uint8_t switches, bool enabled);
+#endif
 
 /*
  * The bq769x0 drives the ALERT pin high if the SYS_STAT register contains
@@ -294,10 +298,8 @@ static int bq769x0_configure_temp_limits(const struct device *dev,
 {
     struct bms_ic_bq769x0_data *dev_data = dev->data;
 
-    dev_data->ic_conf.dis_ot_limit = ic_conf->dis_ot_limit;
-    dev_data->ic_conf.dis_ut_limit = ic_conf->dis_ut_limit;
-    dev_data->ic_conf.chg_ot_limit = ic_conf->chg_ot_limit;
-    dev_data->ic_conf.chg_ut_limit = ic_conf->chg_ut_limit;
+    dev_data->ic_conf.undertemp_limit = MAX(ic_conf->dis_ut_limit, ic_conf->chg_ut_limit);
+    dev_data->ic_conf.overtemp_limit = MIN(ic_conf->dis_ot_limit, ic_conf->chg_ot_limit);
     dev_data->ic_conf.temp_limit_hyst = ic_conf->temp_limit_hyst;
     return 0;
 }
@@ -428,20 +430,16 @@ static int bq769x0_configure_balancing(const struct device *dev, const struct bm
     }
 }
 
-static int bq769x0_configure_alerts(const struct device *dev, const struct bms_ic_conf *ic_conf)
-{
-    struct bms_ic_bq769x0_data *dev_data = dev->data;
-
-    dev_data->ic_conf.alert_mask = ic_conf->alert_mask;
-
-    return 0;
-}
-
 static int bms_ic_bq769x0_configure(const struct device *dev, const struct bms_ic_conf *ic_conf,
                                     uint32_t flags)
 {
+    struct bms_ic_bq769x0_data *dev_data = dev->data;
     uint32_t actual_flags = 0;
     int err = 0;
+
+    err = bq769x0_activate(dev);
+
+    dev_data->ic_conf.event_callback = ic_conf->event_callback;
 
     if (flags & BMS_IC_CONF_VOLTAGE_LIMITS) {
         err |= bq769x0_configure_cell_vp(dev, ic_conf);
@@ -464,11 +462,6 @@ static int bms_ic_bq769x0_configure(const struct device *dev, const struct bms_i
     if (flags & BMS_IC_CONF_BALANCING) {
         err |= bq769x0_configure_balancing(dev, ic_conf);
         actual_flags |= BMS_IC_CONF_BALANCING;
-    }
-
-    if (flags & BMS_IC_CONF_ALERTS) {
-        err |= bq769x0_configure_alerts(dev, ic_conf);
-        actual_flags |= BMS_IC_CONF_ALERTS;
     }
 
     if (err != 0) {
@@ -574,6 +567,7 @@ static int bq769x0_read_temperatures(const struct device *dev, struct bms_ic_dat
         gpio_pin_set_dt(&dev_config->ntc_en_gpio, 0);
     }
 
+    /* calculate temperatures */
     for (int i = 0; i < (dev_config->num_thermistors + dev_config->num_extra_thermistors); i++) {
         if (i < dev_config->num_thermistors) {
             adc_raw[i] &= 0x3FFF;
@@ -610,6 +604,23 @@ static int bq769x0_read_temperatures(const struct device *dev, struct bms_ic_dat
     }
     ic_data->cell_temp_avg =
         sum_temps / (float)(dev_config->num_thermistors + dev_config->num_extra_thermistors) + 0.5F;
+
+    /* update error flags */
+    int8_t hyst = (ic_data->error_flags & BMS_ERR_OVERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
+    if (ic_data->cell_temp_max > dev_data->ic_conf.overtemp_limit - hyst) {
+        ic_data->error_flags |= BMS_ERR_OVERTEMP;
+    }
+    else {
+        ic_data->error_flags &= ~BMS_ERR_OVERTEMP;
+    }
+
+    hyst = (ic_data->error_flags & BMS_ERR_UNDERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
+    if (ic_data->cell_temp_min < dev_data->ic_conf.undertemp_limit + hyst) {
+        ic_data->error_flags |= BMS_ERR_UNDERTEMP;
+    }
+    else {
+        ic_data->error_flags &= ~BMS_ERR_UNDERTEMP;
+    }
 
     return 0;
 }
@@ -649,10 +660,11 @@ static int bq769x0_read_current(const struct device *dev, struct bms_ic_data *ic
 
 static int bq769x0_read_error_flags(const struct device *dev, struct bms_ic_data *ic_data)
 {
-    const struct bms_ic_bq769x0_data *dev_data = dev->data;
     union bq769x0_sys_stat sys_stat;
-    uint32_t error_flags = 0;
-    int8_t hyst;
+    struct bms_ic_bq769x0_data *dev_data = dev->data;
+    uint32_t error_flags = ic_data->error_flags
+                           & ~(BMS_ERR_CELL_UNDERVOLTAGE | BMS_ERR_CELL_OVERVOLTAGE
+                               | BMS_ERR_SHORT_CIRCUIT | BMS_ERR_DIS_OVERCURRENT);
 
     int err = bq769x0_read_byte(dev, BQ769X0_SYS_STAT, &sys_stat.byte);
     if (err != 0) {
@@ -664,29 +676,193 @@ static int bq769x0_read_error_flags(const struct device *dev, struct bms_ic_data
     error_flags |= (sys_stat.SCD * UINT32_MAX) & BMS_ERR_SHORT_CIRCUIT;
     error_flags |= (sys_stat.OCD * UINT32_MAX) & BMS_ERR_DIS_OVERCURRENT;
 
-    hyst = (ic_data->error_flags & BMS_ERR_CHG_OVERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
-    if (ic_data->cell_temp_max > dev_data->ic_conf.chg_ot_limit - hyst) {
-        error_flags |= BMS_ERR_CHG_OVERTEMP;
+    int8_t hyst = (ic_data->error_flags & BMS_ERR_OVERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
+    if (ic_data->cell_temp_max > dev_data->ic_conf.overtemp_limit - hyst) {
+        ic_data->error_flags |= BMS_ERR_OVERTEMP;
+    }
+    else {
+        ic_data->error_flags &= ~BMS_ERR_OVERTEMP;
     }
 
-    hyst = (ic_data->error_flags & BMS_ERR_CHG_UNDERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
-    if (ic_data->cell_temp_min < dev_data->ic_conf.chg_ut_limit + hyst) {
-        error_flags |= BMS_ERR_CHG_UNDERTEMP;
+    hyst = (ic_data->error_flags & BMS_ERR_UNDERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
+    if (ic_data->cell_temp_min < dev_data->ic_conf.undertemp_limit + hyst) {
+        ic_data->error_flags |= BMS_ERR_UNDERTEMP;
     }
-
-    hyst = (ic_data->error_flags & BMS_ERR_DIS_OVERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
-    if (ic_data->cell_temp_max > dev_data->ic_conf.dis_ot_limit - hyst) {
-        error_flags |= BMS_ERR_DIS_OVERTEMP;
-    }
-
-    hyst = (ic_data->error_flags & BMS_ERR_DIS_UNDERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
-    if (ic_data->cell_temp_min < dev_data->ic_conf.dis_ut_limit + hyst) {
-        error_flags |= BMS_ERR_DIS_UNDERTEMP;
+    else {
+        ic_data->error_flags &= ~BMS_ERR_UNDERTEMP;
     }
 
     ic_data->error_flags = error_flags;
 
     return 0;
+}
+
+static uint32_t bq769x0_update_status(const struct device *dev, struct bms_ic_data *ic_data)
+{
+    struct bms_ic_bq769x0_data *dev_data = dev->data;
+    uint32_t event_flags = 0;
+    int err;
+
+    union bq769x0_sys_stat sys_stat = { 0 };
+    err = bq769x0_read_byte(dev, BQ769X0_SYS_STAT, &sys_stat.byte);
+
+#ifdef CONFIG_BMS_IC_CURRENT_MONITORING
+    /* get new current reading if available */
+    if (sys_stat.CC_READY == 1) {
+        int prev_current = ic_data->current;
+        bq769x0_read_current(dev, ic_data);
+        LOG_DBG("New current reading: %d mA", ic_data->current);
+
+        err = bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_CC_READY);
+        if (err != 0) {
+            LOG_ERR("Failed to clear CC_READY flag");
+        }
+
+        /* deliver new values to application */
+        if ((ic_data->current != 0) || (prev_current != 0)) {
+            event_flags |= BMS_IC_DATA_CURRENT;
+        }
+    }
+#endif /* CONFIG_BMS_IC_CURRENT_MONITORING */
+
+    uint32_t current_time_s = k_uptime_seconds();
+    uint32_t prev_error_flags = ic_data->error_flags;
+
+    /* keep only the errors for the rest */
+    sys_stat.byte &= BQ769X0_SYS_STAT_ERROR_MASK;
+
+    /* read voltages periodically, and when error is reported */
+    if (((current_time_s - dev_data->poll_timestamp_s) >= BQ769X0_TEMPERATURE_INTERVAL_S)
+        || (sys_stat.byte & (BQ769X0_SYS_STAT_UV | BQ769X0_SYS_STAT_OV)))
+    {
+        bq769x0_read_cell_voltages(dev, ic_data);
+        bq769x0_read_total_voltages(dev, ic_data);
+        event_flags |= BMS_IC_DATA_CELL_VOLTAGES | BMS_IC_DATA_PACK_VOLTAGES;
+    }
+
+    /* read temperatures periodically */
+    if ((current_time_s - dev_data->poll_timestamp_s) >= BQ769X0_TEMPERATURE_INTERVAL_S) {
+        bq769x0_read_temperatures(dev, ic_data);
+#ifdef CONFIG_BMS_IC_SWITCHES
+        /* React on temperature errors by disabling switches */
+        if ((ic_data->error_flags & (BMS_ERR_UNDERTEMP | BMS_ERR_OVERTEMP))
+            && (prev_error_flags & (BMS_ERR_UNDERTEMP | BMS_ERR_OVERTEMP)) == 0)
+        {
+            LOG_INF("Disabling switches due to temperature error 0x%lX",
+                    ic_data->error_flags & (BMS_ERR_UNDERTEMP | BMS_ERR_OVERTEMP));
+            bms_ic_bq769x0_set_switches(dev, BMS_SWITCH_CHG | BMS_SWITCH_DIS, false);
+        }
+#endif
+        dev_data->poll_timestamp_s = current_time_s;
+        event_flags |= BMS_IC_DATA_TEMPERATURES;
+    }
+
+    /* handle potential errors */
+    if (sys_stat.byte != 0) {
+#ifdef CONFIG_BMS_IC_SWITCHES
+        if (ic_data->active_switches != 0) {
+            union bq769x0_sys_ctrl2 sys_ctrl2;
+
+            /* Errors change the switch state, need to sync it */
+            err = bq769x0_read_byte(dev, BQ769X0_SYS_CTRL2, &sys_ctrl2.byte);
+            if (err == 0) {
+                uint8_t active_switches = ic_data->active_switches;
+                ic_data->active_switches = (sys_ctrl2.CHG_ON ? BMS_SWITCH_CHG : 0)
+                                           | (sys_ctrl2.DSG_ON ? BMS_SWITCH_DIS : 0);
+                if (ic_data->active_switches != active_switches) {
+                    LOG_WRN("Switch state changed due to errors 0x%X: %d -> %d", sys_stat.byte,
+                            active_switches, ic_data->active_switches);
+                    event_flags |= BMS_IC_DATA_SWITCH_STATE;
+                }
+            }
+        }
+#endif
+        if (dev_data->error_timestamp_s == UINT32_MAX) {
+            dev_data->error_timestamp_s = current_time_s;
+        }
+        uint32_t elapsed_time_s = current_time_s - dev_data->error_timestamp_s;
+        err = 0;
+
+        if (sys_stat.DEVICE_XREADY || sys_stat.OVRD_ALERT) {
+            ic_data->error_flags |= BMS_ERR_IC;
+        } else {
+            ic_data->error_flags &= ~BMS_ERR_IC;
+        }
+        if (sys_stat.DEVICE_XREADY) {
+            /* datasheet recommendation: try to clear after waiting a few seconds */
+            if (elapsed_time_s > 3) {
+                LOG_DBG("Clearing XR error");
+                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_DEVICE_XREADY);
+            }
+        }
+        if (sys_stat.OVRD_ALERT) {
+            if (elapsed_time_s > 10) {
+                LOG_DBG("Clearing Override Alert error");
+                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_OVRD_ALERT);
+            }
+        }
+        if (sys_stat.UV) {
+            ic_data->error_flags |= BMS_ERR_CELL_UNDERVOLTAGE;
+            if (ic_data->cell_voltage_min > dev_data->ic_conf.cell_uv_reset) {
+                LOG_DBG("Clearing UV error");
+                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_UV);
+            }
+        } else {
+            ic_data->error_flags &= ~BMS_ERR_CELL_UNDERVOLTAGE;
+        }
+        if (sys_stat.OV) {
+            ic_data->error_flags |= BMS_ERR_CELL_OVERVOLTAGE;
+            if (ic_data->cell_voltage_max < dev_data->ic_conf.cell_ov_reset) {
+                LOG_DBG("Clearing OV error");
+                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_OV);
+            }
+        } else {
+            ic_data->error_flags &= ~BMS_ERR_CELL_OVERVOLTAGE;
+        }
+        if (sys_stat.SCD) {
+            ic_data->error_flags |= BMS_ERR_SHORT_CIRCUIT;
+            if (elapsed_time_s > 60) {
+                LOG_DBG("Clearing SCD error");
+                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_SCD);
+            }
+        } else {
+            ic_data->error_flags &= ~BMS_ERR_SHORT_CIRCUIT;
+        }
+        if (sys_stat.OCD) {
+            ic_data->error_flags |= BMS_ERR_DIS_OVERCURRENT;
+            if (elapsed_time_s > 60) {
+                LOG_DBG("Clearing OCD error");
+                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_OCD);
+            }
+        } else {
+            ic_data->error_flags &= ~BMS_ERR_DIS_OVERCURRENT;
+        }
+
+        if (err != 0) {
+            LOG_ERR("Attempts to clear error flags failed");
+        }
+
+        /* While errors persist, the ALERT pin is asserted, need to poll for updates */
+        k_work_reschedule(&dev_data->alert_work, K_SECONDS(1));
+    }
+    else {
+        /* errors have been cleared */
+        dev_data->error_timestamp_s = UINT32_MAX;
+        ic_data->error_flags &= ~(BMS_ERR_IC | BMS_ERR_CELL_UNDERVOLTAGE | BMS_ERR_CELL_OVERVOLTAGE
+                                  | BMS_ERR_SHORT_CIRCUIT | BMS_ERR_DIS_OVERCURRENT);
+
+#ifndef CONFIG_BMS_IC_CURRENT_MONITORING
+        /* without current monitoring the ALERT pin doesn't get asserted without errors */
+        k_work_reschedule(&dev_data->alert_work, K_SECONDS(BQ769X0_TEMPERATURE_INTERVAL_S));
+#endif
+    }
+
+    if (prev_error_flags != ic_data->error_flags) {
+        LOG_INF("Error flags updated: 0x%X -> 0x%X", prev_error_flags, ic_data->error_flags);
+        event_flags |= BMS_IC_DATA_ERROR_FLAGS;
+    }
+
+    return event_flags;
 }
 
 static void bq769x0_alert_handler(struct k_work *work)
@@ -696,85 +872,11 @@ static void bq769x0_alert_handler(struct k_work *work)
         CONTAINER_OF(dwork, struct bms_ic_bq769x0_data, alert_work);
     const struct device *dev = dev_data->dev;
     struct bms_ic_data *ic_data = &dev_data->ic_data;
-    int err;
+    uint32_t event_flags = bq769x0_update_status(dev, ic_data);
 
-    /* ToDo: Handle also temperature and chg errors (incl. temp hysteresis) */
-
-    union bq769x0_sys_stat sys_stat;
-    err = bq769x0_read_byte(dev, BQ769X0_SYS_STAT, &sys_stat.byte);
-    if (err != 0) {
-        return;
-    }
-
-    /* get new current reading if available */
-    if (sys_stat.CC_READY == 1) {
-#ifdef CONFIG_BMS_IC_CURRENT_MONITORING
-        bq769x0_read_current(dev, ic_data);
-        LOG_DBG("New current reading: %d mA", ic_data->current);
-#endif /* CONFIG_BMS_IC_CURRENT_MONITORING */
-        err = bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_CC_READY);
-        if (err != 0) {
-            LOG_ERR("Failed to clear CC_READY flag");
-        }
-    }
-
-    /* handle potential errors */
-    if ((sys_stat.byte & BQ769X0_SYS_STAT_ERROR_MASK) != 0) {
-        if (dev_data->error_seconds_counter < 0) {
-            dev_data->error_seconds_counter = 0;
-        }
-
-        err = 0;
-
-        if (sys_stat.DEVICE_XREADY) {
-            /* datasheet recommendation: try to clear after waiting a few seconds */
-            if (dev_data->error_seconds_counter % 3 == 0) {
-                LOG_DBG("Attempting to clear XR error");
-                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_DEVICE_XREADY);
-            }
-        }
-        if (sys_stat.OVRD_ALERT) {
-            if (dev_data->error_seconds_counter % 10 == 0) {
-                LOG_DBG("Attempting to clear Alert error");
-                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_OVRD_ALERT);
-            }
-        }
-        if (sys_stat.UV) {
-            bq769x0_read_cell_voltages(dev, ic_data);
-            if (ic_data->cell_voltage_min > dev_data->ic_conf.cell_uv_reset) {
-                LOG_DBG("Attempting to clear UV error");
-                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_UV);
-            }
-        }
-        if (sys_stat.OV) {
-            bq769x0_read_cell_voltages(dev, ic_data);
-            if (ic_data->cell_voltage_max < dev_data->ic_conf.cell_ov_reset) {
-                LOG_DBG("Attempting to clear OV error");
-                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_OV);
-            }
-        }
-        if (sys_stat.SCD) {
-            if (dev_data->error_seconds_counter % 60 == 0) {
-                LOG_DBG("Attempting to clear SCD error");
-                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_SCD);
-            }
-        }
-        if (sys_stat.OCD) {
-            if (dev_data->error_seconds_counter % 60 == 0) {
-                LOG_DBG("Attempting to clear OCD error");
-                err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_OCD);
-            }
-        }
-
-        if (err != 0) {
-            LOG_ERR("Attempts to clear error flags failed");
-        }
-
-        dev_data->error_seconds_counter++;
-        k_work_reschedule(dwork, K_SECONDS(1));
-    }
-    else {
-        dev_data->error_seconds_counter = -1;
+    /* notify application about new data / errors */
+    if ((event_flags != 0) && (dev_data->ic_conf.event_callback != NULL)) {
+        dev_data->ic_conf.event_callback(dev, event_flags, ic_data);
     }
 }
 
@@ -996,6 +1098,10 @@ static int bq769x0_activate(const struct device *dev)
     struct bms_ic_bq769x0_data *dev_data = dev->data;
     int err;
 
+    if (dev_data->adc_gain != 0) {
+        /* already activated */
+        return 0;
+    }
     /* Datasheet: 10 ms delay (t_BOOTREADY) */
     k_sleep(K_MSEC(10));
 
@@ -1080,6 +1186,9 @@ static int bq769x0_init(const struct device *dev)
     dev_data->ic_data.connected_cells = dev_config->used_cell_count;
     dev_data->ic_data.used_thermistors =
         dev_config->num_thermistors + dev_config->num_extra_thermistors;
+
+    /* set initial error flag, so callback is triggered at startup when no errors are present */
+    dev_data->ic_data.error_flags = BMS_ERR_IC;
 
     k_work_init_delayable(&dev_data->alert_work, bq769x0_alert_handler);
     k_work_init_delayable(&dev_data->balancing_work, bq769x0_balancing_work_handler);

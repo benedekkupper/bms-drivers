@@ -42,7 +42,10 @@ extern "C" {
 #define BMS_ERR_DIS_OFF           BIT(12) ///< Discharge FET is off even though it should be on
 #define BMS_ERR_CHG_OFF           BIT(13) ///< Charge FET is off even though it should be on
 #define BMS_ERR_FET_OVERTEMP      BIT(14) ///< MOSFET temperature above limit
-#define BMS_ERR_ALL               GENMASK(14, 0)
+#define BMS_ERR_IC                BIT(15) ///< BMS IC fault
+#define BMS_ERR_UNDERTEMP         (BMS_ERR_DIS_UNDERTEMP | BMS_ERR_CHG_UNDERTEMP)
+#define BMS_ERR_OVERTEMP          (BMS_ERR_DIS_OVERTEMP | BMS_ERR_CHG_OVERTEMP)
+#define BMS_ERR_ALL               GENMASK(15, 0)
 
 #ifdef __cplusplus
 }

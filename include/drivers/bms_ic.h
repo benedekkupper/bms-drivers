@@ -57,6 +57,11 @@ enum bms_ic_mode
     BMS_IC_MODE_OFF,
 };
 
+struct bms_ic_data;
+
+typedef void (*bms_ic_event_callback_t)(const struct device *dev, uint32_t event_flags,
+                                        const struct bms_ic_data *data);
+
 /**
  * BMS configuration values, stored in RAM.
  */
@@ -131,6 +136,9 @@ struct bms_ic_conf
     /* Alert settings */
     /** Error flags which should trigger an alert action (if supported by the IC) */
     uint32_t alert_mask;
+
+    /* Callback is triggered with data flags, indicating which data elements have changed */
+    bms_ic_event_callback_t event_callback;
 };
 
 /**

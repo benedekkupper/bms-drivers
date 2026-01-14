@@ -194,7 +194,7 @@ struct bms_ic_data
     uint32_t balancing_status;
 
     /** BMS errors stored as BMS_ERR_* flags */
-    uint32_t error_flags;
+    bms_error_flags_t error_flags;
 };
 
 /**

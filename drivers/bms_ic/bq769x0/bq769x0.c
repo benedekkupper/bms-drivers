@@ -751,7 +751,7 @@ static uint32_t bq769x0_update_status(const struct device *dev, struct bms_ic_da
         if ((ic_data->error_flags & (BMS_ERR_UNDERTEMP | BMS_ERR_OVERTEMP))
             && (prev_error_flags & (BMS_ERR_UNDERTEMP | BMS_ERR_OVERTEMP)) == 0)
         {
-            LOG_INF("Disabling switches due to temperature error 0x%lX",
+            LOG_INF("Disabling switches due to temperature error 0x%X",
                     ic_data->error_flags & (BMS_ERR_UNDERTEMP | BMS_ERR_OVERTEMP));
             bms_ic_bq769x0_set_switches(dev, BMS_SWITCH_CHG | BMS_SWITCH_DIS, false);
         }

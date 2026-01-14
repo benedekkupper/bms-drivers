@@ -739,7 +739,10 @@ static uint32_t bq769x0_update_status(const struct device *dev, struct bms_ic_da
         || (sys_stat.byte & (BQ769X0_SYS_STAT_UV | BQ769X0_SYS_STAT_OV)))
     {
         bq769x0_read_cell_voltages(dev, ic_data);
-        bq769x0_read_total_voltages(dev, ic_data);
+        ic_data->total_voltage = 0;
+        for (int i = 0; i < ic_data->connected_cells; i++) {
+            ic_data->total_voltage += ic_data->cell_voltages[i];
+        }
         event_flags |= BMS_IC_DATA_CELL_VOLTAGES | BMS_IC_DATA_PACK_VOLTAGES;
     }
 

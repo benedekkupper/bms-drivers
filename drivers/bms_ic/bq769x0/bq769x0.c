@@ -220,6 +220,9 @@ static int bq769x0_configure_cell_vp(const struct device *dev, const struct bms_
     int uv_trip = 0;
     int err;
 
+    dev_data->ic_conf.cell_ov_reset = ic_conf->cell_ov_reset_mV;
+    dev_data->ic_conf.cell_uv_reset = ic_conf->cell_uv_reset_mV;
+
     err = bq769x0_read_byte(dev, BQ769X0_PROTECT3, &protect3.byte);
     if (err != 0) {
         return err;

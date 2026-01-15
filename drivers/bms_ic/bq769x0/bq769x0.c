@@ -642,12 +642,12 @@ static int bq769x0_read_current(const struct device *dev, struct bms_ic_data *ic
         return err;
     }
 
-    int32_t current_mA = adc_raw * 8440 / (int32_t)dev_config->shunt_resistor_uohm;
-
     /* remove noise around 0 A */
-    if (current_mA > -25 && current_mA < 25) {
-        current_mA = 0;
+    if (adc_raw > -2 && adc_raw < 2) {
+        adc_raw = 0;
     }
+
+    int32_t current_mA = adc_raw * 8440 / (int32_t)dev_config->shunt_resistor_uohm;
 
     ic_data->current = current_mA;
 

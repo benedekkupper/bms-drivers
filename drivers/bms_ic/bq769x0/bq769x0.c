@@ -756,7 +756,10 @@ static uint32_t bq769x0_update_status(const struct device *dev, struct bms_ic_da
         {
             LOG_INF("Disabling switches due to temperature error 0x%X",
                     ic_data->error_flags & (BMS_ERR_UNDERTEMP | BMS_ERR_OVERTEMP));
-            bms_ic_bq769x0_set_switches(dev, BMS_SWITCH_CHG | BMS_SWITCH_DIS, false);
+            if (ic_data->active_switches != 0) {
+                event_flags |= BMS_IC_DATA_SWITCH_STATE;
+                bms_ic_bq769x0_set_switches(dev, BMS_SWITCH_CHG | BMS_SWITCH_DIS, false);
+            }
         }
 #endif
         dev_data->poll_timestamp_s = current_time_s;
@@ -791,7 +794,8 @@ static uint32_t bq769x0_update_status(const struct device *dev, struct bms_ic_da
 
         if (sys_stat.DEVICE_XREADY || sys_stat.OVRD_ALERT) {
             ic_data->error_flags |= BMS_ERR_IC;
-        } else {
+        }
+        else {
             ic_data->error_flags &= ~BMS_ERR_IC;
         }
         if (sys_stat.DEVICE_XREADY) {
@@ -813,7 +817,8 @@ static uint32_t bq769x0_update_status(const struct device *dev, struct bms_ic_da
                 LOG_DBG("Clearing UV error");
                 err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_UV);
             }
-        } else {
+        }
+        else {
             ic_data->error_flags &= ~BMS_ERR_CELL_UNDERVOLTAGE;
         }
         if (sys_stat.OV) {
@@ -822,7 +827,8 @@ static uint32_t bq769x0_update_status(const struct device *dev, struct bms_ic_da
                 LOG_DBG("Clearing OV error");
                 err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_OV);
             }
-        } else {
+        }
+        else {
             ic_data->error_flags &= ~BMS_ERR_CELL_OVERVOLTAGE;
         }
         if (sys_stat.SCD) {
@@ -831,7 +837,8 @@ static uint32_t bq769x0_update_status(const struct device *dev, struct bms_ic_da
                 LOG_DBG("Clearing SCD error");
                 err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_SCD);
             }
-        } else {
+        }
+        else {
             ic_data->error_flags &= ~BMS_ERR_SHORT_CIRCUIT;
         }
         if (sys_stat.OCD) {
@@ -840,7 +847,8 @@ static uint32_t bq769x0_update_status(const struct device *dev, struct bms_ic_da
                 LOG_DBG("Clearing OCD error");
                 err |= bq769x0_write_byte(dev, BQ769X0_SYS_STAT, BQ769X0_SYS_STAT_OCD);
             }
-        } else {
+        }
+        else {
             ic_data->error_flags &= ~BMS_ERR_DIS_OVERCURRENT;
         }
 
@@ -949,6 +957,7 @@ static int bms_ic_bq769x0_read_data(const struct device *dev, struct bms_ic_data
 
 static int bms_ic_bq769x0_set_switches(const struct device *dev, uint8_t switches, bool enabled)
 {
+    struct bms_ic_bq769x0_data *dev_data = dev->data;
     union bq769x0_sys_ctrl2 sys_ctrl2;
     int err;
 
@@ -972,6 +981,8 @@ static int bms_ic_bq769x0_set_switches(const struct device *dev, uint8_t switche
     if (err != 0) {
         return err;
     }
+    dev_data->ic_data.active_switches =
+        (sys_ctrl2.CHG_ON ? BMS_SWITCH_CHG : 0) | (sys_ctrl2.DSG_ON ? BMS_SWITCH_DIS : 0);
 
     return 0;
 }

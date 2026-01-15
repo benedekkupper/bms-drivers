@@ -212,6 +212,16 @@ static int bq769x0_detect_crc(const struct device *dev)
     return -EIO;
 }
 
+static uint16_t bq769x0_adc_to_mV(struct bms_ic_bq769x0_data *dev_data, uint16_t adc_value)
+{
+    return (adc_value * dev_data->adc_gain) / 1000 + dev_data->adc_offset;
+}
+
+static uint16_t bq769x0_mV_to_adc(struct bms_ic_bq769x0_data *dev_data, uint16_t mV_value)
+{
+    return (mV_value - dev_data->adc_offset) * 1000 / dev_data->adc_gain;
+}
+
 static int bq769x0_configure_cell_vp(const struct device *dev, const struct bms_ic_conf *ic_conf)
 {
     struct bms_ic_bq769x0_data *dev_data = dev->data;
@@ -220,6 +230,7 @@ static int bq769x0_configure_cell_vp(const struct device *dev, const struct bms_
     int uv_trip = 0;
     int err;
 
+    /* TODO: update the reset values if the trip points are saturated */
     dev_data->ic_conf.cell_ov_reset = ic_conf->cell_ov_reset_mV;
     dev_data->ic_conf.cell_uv_reset = ic_conf->cell_uv_reset_mV;
 
@@ -228,18 +239,33 @@ static int bq769x0_configure_cell_vp(const struct device *dev, const struct bms_
         return err;
     }
 
-    ov_trip =
-        (((ic_conf->cell_ov_limit_mV - dev_data->adc_offset) * 1000 / dev_data->adc_gain) >> 4)
-        & 0x00FF;
+    ov_trip = bq769x0_mV_to_adc(dev_data, ic_conf->cell_ov_limit_mV) >> 4;
+    if (ov_trip > 0x2ff) {
+        ov_trip = 0x2ff;
+        LOG_DBG("OV limit too high, setting to maximum possible value %d mV",
+                bq769x0_adc_to_mV(dev_data, ov_trip << 4));
+    }
+    else if (ov_trip < 0x200) {
+        ov_trip = 0x200;
+        LOG_DBG("OV limit too low, setting to minimum possible value %d mV",
+                bq769x0_adc_to_mV(dev_data, ov_trip << 4));
+    }
     err = bq769x0_write_byte(dev, BQ769X0_OV_TRIP, ov_trip);
     if (err != 0) {
         return err;
     }
 
-    uv_trip =
-        (((ic_conf->cell_uv_limit_mV - dev_data->adc_offset) * 1000 / dev_data->adc_gain) >> 4)
-        & 0x00FF;
-    uv_trip += 1; /* always round up for lower cell voltage */
+    uv_trip = bq769x0_mV_to_adc(dev_data, ic_conf->cell_uv_limit_mV) >> 4;
+    if (uv_trip < 0x100) {
+        uv_trip = 0x100;
+        LOG_DBG("UV limit too low, setting to minimum possible value %d mV",
+                bq769x0_adc_to_mV(dev_data, uv_trip << 4));
+    }
+    else if (uv_trip > 0x1ff) {
+        uv_trip = 0x1ff;
+        LOG_DBG("UV limit too high, setting to maximum possible value %d mV",
+                bq769x0_adc_to_mV(dev_data, uv_trip << 4));
+    }
     err = bq769x0_write_byte(dev, BQ769X0_UV_TRIP, uv_trip);
     if (err != 0) {
         return err;
@@ -281,16 +307,14 @@ static int bq769x0_get_cell_vp(const struct device *dev, struct bms_ic_conf *ic_
     if (err != 0) {
         return err;
     }
-    ic_conf->cell_ov_limit_mV =
-        (1U << 12 | ov_trip << 4) * dev_data->adc_gain / 1000 + dev_data->adc_offset;
+    ic_conf->cell_ov_limit_mV = bq769x0_adc_to_mV(dev_data, (0x200 | ov_trip) << 4);
     ic_conf->cell_ov_delay_ms = bq769x0_ov_delays[protect3.OV_DELAY];
 
     err = bq769x0_read_byte(dev, BQ769X0_UV_TRIP, &uv_trip);
     if (err != 0) {
         return err;
     }
-    ic_conf->cell_uv_limit_mV =
-        (1U << 12 | uv_trip << 4) * dev_data->adc_gain / 1000 + dev_data->adc_offset;
+    ic_conf->cell_uv_limit_mV = bq769x0_adc_to_mV(dev_data, (0x100 | uv_trip) << 4);
     ic_conf->cell_uv_delay_ms = bq769x0_uv_delays[protect3.UV_DELAY];
     return 0;
 }
@@ -490,7 +514,7 @@ static int bq769x0_read_cell_voltages(const struct device *dev, struct bms_ic_da
         }
 
         adc_raw &= 0x3FFF;
-        ic_data->cell_voltages[i] = adc_raw * dev_data->adc_gain / 1000 + dev_data->adc_offset;
+        ic_data->cell_voltages[i] = bq769x0_adc_to_mV(dev_data, adc_raw);
         sum_voltages += ic_data->cell_voltages[i];
         if (ic_data->cell_voltages[i] > v_max) {
             v_max = ic_data->cell_voltages[i];

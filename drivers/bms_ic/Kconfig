@@ -18,6 +18,12 @@ config BMS_IC_HAS_CURRENT_MONITORING
 	help
 	  Select to indicate that the IC supports current monitoring.
 
+config BMS_IC_POLLING_READ_API
+	bool "Enable polling read API to read data from BMS IC"
+	default y
+	help
+	  Use polling to read data from the BMS IC at regular intervals.
+
 module = BMS_IC
 module-str = bms_ic
 source "subsys/logging/Kconfig.template.log_config"

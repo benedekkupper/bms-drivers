@@ -226,7 +226,9 @@ typedef int (*bms_ic_api_debug_print_mem)(const struct device *dev);
 __subsystem struct bms_ic_driver_api
 {
     bms_ic_api_configure configure;
+#ifdef CONFIG_BMS_IC_POLLING_READ_API
     bms_ic_api_read_data read_data;
+#endif
     bms_ic_api_set_switches set_switches;
     bms_ic_api_balance balance;
     bms_ic_api_set_mode set_mode;
@@ -266,6 +268,7 @@ static inline int bms_ic_configure(const struct device *dev, const struct bms_ic
     return api->configure(dev, ic_conf, flags);
 }
 
+#ifdef CONFIG_BMS_IC_POLLING_READ_API
 /**
  * @brief Read data from the IC.
  *
@@ -288,6 +291,7 @@ static inline int bms_ic_read_data(const struct device *dev, struct bms_ic_data 
 
     return api->read_data(dev, data_ptr, flags);
 }
+#endif /* CONFIG_BMS_IC_POLLING_READ_API */
 
 #ifdef CONFIG_BMS_IC_SWITCHES
 /**

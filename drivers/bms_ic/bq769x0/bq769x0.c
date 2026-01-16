@@ -530,6 +530,7 @@ static int bq769x0_read_cell_voltages(const struct device *dev, struct bms_ic_da
     return 0;
 }
 
+#ifdef CONFIG_BMS_IC_POLLING_READ_API
 static int bq769x0_read_total_voltages(const struct device *dev, struct bms_ic_data *ic_data)
 {
     const struct bms_ic_bq769x0_config *dev_config = dev->config;
@@ -547,6 +548,7 @@ static int bq769x0_read_total_voltages(const struct device *dev, struct bms_ic_d
 
     return 0;
 }
+#endif /* CONFIG_BMS_IC_POLLING_READ_API */
 
 static int bq769x0_read_temperatures(const struct device *dev, struct bms_ic_data *ic_data)
 {
@@ -685,6 +687,7 @@ static int bq769x0_read_current(const struct device *dev, struct bms_ic_data *ic
 
 #endif /* CONFIG_BMS_IC_CURRENT_MONITORING */
 
+#ifdef CONFIG_BMS_IC_POLLING_READ_API
 static int bq769x0_read_error_flags(const struct device *dev, struct bms_ic_data *ic_data)
 {
     union bq769x0_sys_stat sys_stat;
@@ -723,6 +726,7 @@ static int bq769x0_read_error_flags(const struct device *dev, struct bms_ic_data
 
     return 0;
 }
+#endif /* CONFIG_BMS_IC_POLLING_READ_API */
 
 static uint32_t bq769x0_update_status(const struct device *dev, struct bms_ic_data *ic_data)
 {
@@ -918,6 +922,7 @@ static void bq769x0_alert_handler(struct k_work *work)
     }
 }
 
+#ifdef CONFIG_BMS_IC_POLLING_READ_API
 static int bms_ic_bq769x0_read_data(const struct device *dev, struct bms_ic_data **data_ptr,
                                     uint32_t flags)
 {
@@ -976,6 +981,7 @@ static int bms_ic_bq769x0_read_data(const struct device *dev, struct bms_ic_data
 
     return (flags == actual_flags) ? 0 : -EINVAL;
 }
+#endif /* CONFIG_BMS_IC_POLLING_READ_API */
 
 #ifdef CONFIG_BMS_IC_SWITCHES
 
@@ -1284,7 +1290,9 @@ static int bq769x0_init(const struct device *dev)
 
 static const struct bms_ic_driver_api bq769x0_driver_api = {
     .configure = bms_ic_bq769x0_configure,
+#ifdef CONFIG_BMS_IC_POLLING_READ_API
     .read_data = bms_ic_bq769x0_read_data,
+#endif
 #ifdef CONFIG_BMS_IC_SWITCHES
     .set_switches = bms_ic_bq769x0_set_switches,
 #endif

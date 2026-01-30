@@ -26,3 +26,10 @@ properties:
     required: false
     description: |
       GPIO to power the NTCs.
+
+  num-fet-ntcs:
+    type: int
+    default: 0
+    description: |
+      Number of NTCs connected to the FETs for over-temperature protection.
+      The rest of the NTCs (if any) are assumed to be connected to the cells.

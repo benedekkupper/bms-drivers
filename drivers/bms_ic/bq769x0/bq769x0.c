@@ -42,8 +42,9 @@ struct bms_ic_bq769x0_config
     uint8_t used_cell_count;
     uint8_t num_sections;
     uint8_t num_thermistors;
-    const struct adc_dt_spec *extra_ntc_channels;
     uint8_t num_extra_thermistors;
+    const struct adc_dt_spec *extra_ntc_channels;
+    uint8_t num_fet_ntcs;
 };
 
 /* driver run-time data */
@@ -62,12 +63,15 @@ struct bms_ic_bq769x0_data
     struct
     {
         /* Cell voltage limits */
-        uint32_t cell_ov_reset;
-        uint32_t cell_uv_reset;
+        uint16_t cell_ov_reset;
+        uint16_t cell_uv_reset;
 
         /* Cell temperature limits */
         int8_t overtemp_limit;
         int8_t undertemp_limit;
+#ifdef CONFIG_BMS_IC_SWITCHES
+        int8_t fet_overtemp_limit;
+#endif
         int8_t temp_limit_hyst;
 
         /* Balancing settings */
@@ -327,6 +331,9 @@ static int bq769x0_configure_temp_limits(const struct device *dev,
 
     dev_data->ic_conf.undertemp_limit = MAX(ic_conf->dis_ut_limit, ic_conf->chg_ut_limit);
     dev_data->ic_conf.overtemp_limit = MIN(ic_conf->dis_ot_limit, ic_conf->chg_ot_limit);
+#if CONFIG_BMS_IC_SWITCHES
+    dev_data->ic_conf.fet_overtemp_limit = ic_conf->fet_ot_limit;
+#endif
     dev_data->ic_conf.temp_limit_hyst = ic_conf->temp_limit_hyst;
     return 0;
 }
@@ -550,6 +557,42 @@ static int bq769x0_read_total_voltages(const struct device *dev, struct bms_ic_d
 }
 #endif /* CONFIG_BMS_IC_POLLING_READ_API */
 
+static void bq769x0_update_temperature_errors(struct bms_ic_bq769x0_data *dev_data,
+                                              struct bms_ic_data *ic_data)
+{
+    uint32_t error_flags = ic_data->error_flags;
+
+    if (ic_data->cell_temp_max > dev_data->ic_conf.overtemp_limit) {
+        error_flags |= BMS_ERR_OVERTEMP;
+    }
+    else if (ic_data->cell_temp_max
+             < (dev_data->ic_conf.overtemp_limit - dev_data->ic_conf.temp_limit_hyst))
+    {
+        error_flags &= ~BMS_ERR_OVERTEMP;
+    }
+
+    if (ic_data->cell_temp_min < dev_data->ic_conf.undertemp_limit) {
+        error_flags |= BMS_ERR_UNDERTEMP;
+    }
+    else if (ic_data->cell_temp_min
+             > (dev_data->ic_conf.undertemp_limit + dev_data->ic_conf.temp_limit_hyst))
+    {
+        error_flags &= ~BMS_ERR_UNDERTEMP;
+    }
+
+#ifdef CONFIG_BMS_IC_SWITCHES
+    if (ic_data->mosfet_temp > dev_data->ic_conf.fet_overtemp_limit) {
+        error_flags |= BMS_ERR_FET_OVERTEMP;
+    }
+    else if (ic_data->mosfet_temp
+             < (dev_data->ic_conf.fet_overtemp_limit - dev_data->ic_conf.temp_limit_hyst))
+    {
+        error_flags &= ~BMS_ERR_FET_OVERTEMP;
+    }
+#endif
+    ic_data->error_flags = error_flags;
+}
+
 static int bq769x0_read_temperatures(const struct device *dev, struct bms_ic_data *ic_data)
 {
     const struct bms_ic_bq769x0_config *dev_config = dev->config;
@@ -616,40 +659,41 @@ static int bq769x0_read_temperatures(const struct device *dev, struct bms_ic_dat
             1.0F
             / (1.0F / (273.15F + 25.F) + 1.0F / dev_config->thermistor_beta * logf(rts / 10000.0F));
         tmp -= 273.15F;
-        ic_data->cell_temps[i] = tmp + 0.5F; /* round to nearest integer */
-        if (i == 0) {
-            ic_data->cell_temp_min = ic_data->cell_temps[i];
-            ic_data->cell_temp_max = ic_data->cell_temps[i];
+
+        /* FET NTCs are first */
+        if (i < dev_config->num_fet_ntcs) {
+            if (i == 0) {
+                ic_data->mosfet_temp = tmp + 0.5F; /* round to nearest integer */
+            }
+            else {
+                ic_data->mosfet_temp = MAX(ic_data->mosfet_temp, (int8_t)(tmp + 0.5F));
+            }
         }
+        /* followed by cell NTCs */
         else {
-            if (ic_data->cell_temps[i] < ic_data->cell_temp_min) {
-                ic_data->cell_temp_min = ic_data->cell_temps[i];
+            int cell_index = i - dev_config->num_fet_ntcs;
+            ic_data->cell_temps[cell_index] = tmp + 0.5F; /* round to nearest integer */
+            if (cell_index == 0) {
+                ic_data->cell_temp_min = ic_data->cell_temps[cell_index];
+                ic_data->cell_temp_max = ic_data->cell_temps[cell_index];
             }
-            if (ic_data->cell_temps[i] > ic_data->cell_temp_max) {
-                ic_data->cell_temp_max = ic_data->cell_temps[i];
+            else if (ic_data->cell_temps[cell_index] < ic_data->cell_temp_min) {
+                ic_data->cell_temp_min = ic_data->cell_temps[cell_index];
             }
+            else if (ic_data->cell_temps[cell_index] > ic_data->cell_temp_max) {
+                ic_data->cell_temp_max = ic_data->cell_temps[cell_index];
+            }
+
+            sum_temps += tmp;
         }
-        sum_temps += tmp;
     }
     ic_data->cell_temp_avg =
-        sum_temps / (float)(dev_config->num_thermistors + dev_config->num_extra_thermistors) + 0.5F;
+        sum_temps
+            / (float)(dev_config->num_thermistors + dev_config->num_extra_thermistors
+                      - dev_config->num_fet_ntcs)
+        + 0.5F;
 
-    /* update error flags */
-    int8_t hyst = (ic_data->error_flags & BMS_ERR_OVERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
-    if (ic_data->cell_temp_max > dev_data->ic_conf.overtemp_limit - hyst) {
-        ic_data->error_flags |= BMS_ERR_OVERTEMP;
-    }
-    else {
-        ic_data->error_flags &= ~BMS_ERR_OVERTEMP;
-    }
-
-    hyst = (ic_data->error_flags & BMS_ERR_UNDERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
-    if (ic_data->cell_temp_min < dev_data->ic_conf.undertemp_limit + hyst) {
-        ic_data->error_flags |= BMS_ERR_UNDERTEMP;
-    }
-    else {
-        ic_data->error_flags &= ~BMS_ERR_UNDERTEMP;
-    }
+    bq769x0_update_temperature_errors(dev_data, ic_data);
 
     return 0;
 }
@@ -705,24 +749,9 @@ static int bq769x0_read_error_flags(const struct device *dev, struct bms_ic_data
     error_flags |= (sys_stat.OV * UINT32_MAX) & BMS_ERR_CELL_OVERVOLTAGE;
     error_flags |= (sys_stat.SCD * UINT32_MAX) & BMS_ERR_SHORT_CIRCUIT;
     error_flags |= (sys_stat.OCD * UINT32_MAX) & BMS_ERR_DIS_OVERCURRENT;
-
-    int8_t hyst = (ic_data->error_flags & BMS_ERR_OVERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
-    if (ic_data->cell_temp_max > dev_data->ic_conf.overtemp_limit - hyst) {
-        ic_data->error_flags |= BMS_ERR_OVERTEMP;
-    }
-    else {
-        ic_data->error_flags &= ~BMS_ERR_OVERTEMP;
-    }
-
-    hyst = (ic_data->error_flags & BMS_ERR_UNDERTEMP) ? dev_data->ic_conf.temp_limit_hyst : 0;
-    if (ic_data->cell_temp_min < dev_data->ic_conf.undertemp_limit + hyst) {
-        ic_data->error_flags |= BMS_ERR_UNDERTEMP;
-    }
-    else {
-        ic_data->error_flags &= ~BMS_ERR_UNDERTEMP;
-    }
-
     ic_data->error_flags = error_flags;
+
+    bq769x0_update_temperature_errors(dev_data, ic_data);
 
     return 0;
 }
@@ -1314,6 +1343,8 @@ static const struct bms_ic_driver_api bq769x0_driver_api = {
     static struct bms_ic_bq769x0_data bq769x0_data_##index = { 0 }; \
     BQ769X0_ASSERT_CURRENT_MONITORING_PROP_GREATER_ZERO(index, shunt_resistor_uohm); \
     BQ769X0_ASSERT_CURRENT_MONITORING_PROP_GREATER_ZERO(index, board_max_current); \
+    BUILD_ASSERT(DT_INST_PROP(index, num_fet_ntcs) <= BQ769X0_NUM_SECTIONS(index), \
+                 "The number of FET NTCs shall not exceed the number of BQ769X0 sections"); \
     IF_ENABLED( \
         DT_INST_NODE_HAS_PROP(index, io_channels), \
         (static const struct adc_dt_spec bq769x0_extra_ntc_##index[] = { \
@@ -1328,9 +1359,10 @@ static const struct bms_ic_driver_api bq769x0_driver_api = {
         .used_cell_count = DT_INST_PROP(index, used_cell_count), \
         .num_sections = BQ769X0_NUM_SECTIONS(index), \
         .num_thermistors = MIN(CONFIG_BMS_IC_MAX_THERMISTORS, BQ769X0_NUM_SECTIONS(index)), \
+        .num_extra_thermistors = DT_INST_PROP_LEN_OR(index, io_channels, 0), \
+        .num_fet_ntcs = DT_INST_PROP(index, num_fet_ntcs), \
         IF_ENABLED(DT_INST_NODE_HAS_PROP(index, io_channels), \
                    (.extra_ntc_channels = bq769x0_extra_ntc_##index, )) \
-            .num_extra_thermistors = DT_INST_PROP_LEN_OR(index, io_channels, 0), \
     }; \
     DEVICE_DT_INST_DEFINE(index, &bq769x0_init, NULL, &bq769x0_data_##index, \
                           &bq769x0_config_##index, POST_KERNEL, CONFIG_BMS_IC_INIT_PRIORITY, \

@@ -100,6 +100,10 @@ struct bms_ic_conf
     /** Discharge short circuit delay (us) */
     uint32_t dis_sc_delay_us;
 #endif
+#if CONFIG_BMS_IC_SWITCHES
+    /** FET over-temperature limit (°C) */
+    int8_t fet_ot_limit;
+#endif
 
     /* Cell temperature limits */
     /** Discharge over-temperature (DOT) limit (°C) */
@@ -147,13 +151,13 @@ struct bms_ic_conf
 struct bms_ic_data
 {
     /** Single cell voltages (mV) */
-    uint32_t cell_voltages[CONFIG_BMS_IC_MAX_CELLS];
+    uint16_t cell_voltages[CONFIG_BMS_IC_MAX_CELLS];
     /** Maximum cell voltage (mV) */
-    uint32_t cell_voltage_max;
+    uint16_t cell_voltage_max;
     /** Minimum cell voltage (mV) */
-    uint32_t cell_voltage_min;
+    uint16_t cell_voltage_min;
     /** Average cell voltage (mV) */
-    uint32_t cell_voltage_avg;
+    uint16_t cell_voltage_avg;
     /** Battery internal stack voltage (mV) */
     uint32_t total_voltage;
 #if CONFIG_BMS_IC_SWITCHES && CONFIG_BMS_IC_BQ769X2
@@ -176,7 +180,7 @@ struct bms_ic_data
     int8_t cell_temp_avg;
     /** Internal BMS IC temperature (°C) */
     int8_t ic_temp;
-#if CONFIG_BMS_IC_SWITCHES && (CONFIG_BMS_IC_BQ769X2 || CONFIG_BMS_IC_ISL94202)
+#if CONFIG_BMS_IC_SWITCHES
     /** MOSFET temperature (°C) */
     int8_t mosfet_temp;
 #endif

@@ -922,7 +922,6 @@ static void bq769x0_alert_handler(struct k_work *work)
     }
 }
 
-#ifdef CONFIG_BMS_IC_POLLING_READ_API
 static int bms_ic_bq769x0_read_data(const struct device *dev, struct bms_ic_data **data_ptr,
                                     uint32_t flags)
 {
@@ -933,6 +932,7 @@ static int bms_ic_bq769x0_read_data(const struct device *dev, struct bms_ic_data
 
     *data_ptr = ic_data;
 
+#ifdef CONFIG_BMS_IC_POLLING_READ_API
     if (flags & BMS_IC_DATA_CELL_VOLTAGES) {
         err |= bq769x0_read_cell_voltages(dev, ic_data);
         actual_flags |= BMS_IC_DATA_CELL_VOLTAGES;
@@ -980,8 +980,10 @@ static int bms_ic_bq769x0_read_data(const struct device *dev, struct bms_ic_data
     }
 
     return (flags == actual_flags) ? 0 : -EINVAL;
-}
+#else
+    return 0;
 #endif /* CONFIG_BMS_IC_POLLING_READ_API */
+}
 
 #ifdef CONFIG_BMS_IC_SWITCHES
 
@@ -1290,9 +1292,7 @@ static int bq769x0_init(const struct device *dev)
 
 static const struct bms_ic_driver_api bq769x0_driver_api = {
     .configure = bms_ic_bq769x0_configure,
-#ifdef CONFIG_BMS_IC_POLLING_READ_API
     .read_data = bms_ic_bq769x0_read_data,
-#endif
 #ifdef CONFIG_BMS_IC_SWITCHES
     .set_switches = bms_ic_bq769x0_set_switches,
 #endif

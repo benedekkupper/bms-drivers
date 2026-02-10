@@ -956,12 +956,11 @@ static int bms_ic_bq769x0_read_data(const struct device *dev, struct bms_ic_data
 {
     struct bms_ic_bq769x0_data *dev_data = dev->data;
     struct bms_ic_data *ic_data = &dev_data->ic_data;
+
+#ifdef CONFIG_BMS_IC_POLLING_READ_API
     uint32_t actual_flags = 0;
     int err = 0;
 
-    *data_ptr = ic_data;
-
-#ifdef CONFIG_BMS_IC_POLLING_READ_API
     if (flags & BMS_IC_DATA_CELL_VOLTAGES) {
         err |= bq769x0_read_cell_voltages(dev, ic_data);
         actual_flags |= BMS_IC_DATA_CELL_VOLTAGES;
@@ -1010,6 +1009,7 @@ static int bms_ic_bq769x0_read_data(const struct device *dev, struct bms_ic_data
 
     return (flags == actual_flags) ? 0 : -EINVAL;
 #else
+    *data_ptr = ic_data;
     return 0;
 #endif /* CONFIG_BMS_IC_POLLING_READ_API */
 }

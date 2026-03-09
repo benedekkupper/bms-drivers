@@ -86,7 +86,6 @@ struct bms_ic_bq769x0_data
     int64_t active_timestamp;
     uint32_t error_timestamp_s;
     uint32_t poll_timestamp_s;
-    uint32_t balancing_status;
     uint32_t adc_channels;
     float adc_lsb_mV;
     bool crc_enabled;
@@ -461,6 +460,7 @@ static int bq769x0_configure_balancing(const struct device *dev, const struct bm
     dev_data->ic_conf.auto_balancing = ic_conf->auto_balancing;
 
     if (ic_conf->auto_balancing) {
+        dev_data->active_timestamp = k_uptime_get();
         k_work_schedule(&dev_data->balancing_work, K_NO_WAIT);
         return 0;
     }
@@ -991,11 +991,6 @@ static int bms_ic_bq769x0_read_data(const struct device *dev, struct bms_ic_data
     }
 #endif /* CONFIG_BMS_IC_CURRENT_MONITORING */
 
-    if (flags & BMS_IC_DATA_BALANCING) {
-        ic_data->balancing_status = dev_data->balancing_status;
-        actual_flags |= BMS_IC_DATA_BALANCING;
-    }
-
     if (flags & BMS_IC_DATA_ERROR_FLAGS) {
         err |= bq769x0_read_error_flags(dev, ic_data);
         actual_flags |= BMS_IC_DATA_ERROR_FLAGS;
@@ -1077,7 +1072,7 @@ static int bq769x0_set_balancing_switches(const struct device *dev, uint32_t cel
         }
     }
 
-    dev_data->balancing_status = cells;
+    dev_data->ic_data.balancing_status = cells;
 
     return 0;
 }
@@ -1092,21 +1087,22 @@ static void bq769x0_balancing_work_handler(struct k_work *work)
     struct bms_ic_data *ic_data = &dev_data->ic_data;
     int err;
 
-    if (k_uptime_delta(&dev_data->active_timestamp) >= dev_data->ic_conf.bal_idle_delay
+    if ((k_uptime_get() - dev_data->active_timestamp) >= dev_data->ic_conf.bal_idle_delay
         && ic_data->cell_voltage_max > dev_data->ic_conf.bal_cell_voltage_min
         && (ic_data->cell_voltage_max - ic_data->cell_voltage_min)
                > dev_data->ic_conf.bal_cell_voltage_diff)
     {
         ic_data->balancing_status = 0; /* current status will be set in following loop */
 
-        int balancing_flags;
-        int balancing_flags_target;
+        uint32_t balancing_flags;
+        uint32_t balancing_flags_target;
 
         for (int section = 0; section < dev_config->num_sections; section++) {
             /* find cells which should be balanced and sort them by voltage descending */
             int cell_list[5];
             int cell_counter = 0;
-            for (int i = 0; i < 5; i++) {
+            int cells_in_section = MIN(5, dev_config->used_cell_count - section * 5);
+            for (int i = 0; i < cells_in_section; i++) {
                 if ((ic_data->cell_voltages[section * 5 + i] - ic_data->cell_voltage_min)
                     > dev_data->ic_conf.bal_cell_voltage_diff)
                 {

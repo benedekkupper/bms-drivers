@@ -27,6 +27,7 @@
 
 LOG_MODULE_REGISTER(bms_ic_bq769x0, CONFIG_BMS_IC_LOG_LEVEL);
 
+#define BQ769X0_SECTION_CELL_COUNT     (5)
 #define BQ769X0_READ_MAX_ATTEMPTS      (3)
 #define BQ769X0_TEMPERATURE_INTERVAL_S (2)
 
@@ -39,12 +40,12 @@ struct bms_ic_bq769x0_config
     uint32_t shunt_resistor_uohm;
     uint32_t board_max_current;
     float thermistor_beta;
-    uint8_t used_cell_count;
+    uint16_t used_cell_channels;
     uint8_t num_sections;
     uint8_t num_thermistors;
     uint8_t num_extra_thermistors;
-    const struct adc_dt_spec *extra_ntc_channels;
     uint8_t num_fet_ntcs;
+    const struct adc_dt_spec *extra_ntc_channels;
 };
 
 /* driver run-time data */
@@ -516,27 +517,34 @@ static int bq769x0_read_cell_voltages(const struct device *dev, struct bms_ic_da
     const struct bms_ic_bq769x0_config *dev_config = dev->config;
     struct bms_ic_bq769x0_data *dev_data = dev->data;
     uint16_t adc_raw;
+    int conn_cells = 0;
     uint32_t sum_voltages = 0;
     uint32_t v_max = 0, v_min = 10000;
     int err;
 
-    for (int i = 0; i < dev_config->used_cell_count; i++) {
+    for (int i = 0; i < dev_config->num_sections * BQ769X0_SECTION_CELL_COUNT; i++) {
+        if ((dev_config->used_cell_channels & (1 << i)) == 0) {
+            continue; /* skip unused cell slots */
+        }
+
         err = bq769x0_read_word(dev, BQ769X0_VC1_HI_BYTE + i * 2, &adc_raw);
         if (err != 0) {
             return err;
         }
 
         adc_raw &= 0x3FFF;
-        ic_data->cell_voltages[i] = bq769x0_adc_to_mV(dev_data, adc_raw);
-        sum_voltages += ic_data->cell_voltages[i];
-        if (ic_data->cell_voltages[i] > v_max) {
-            v_max = ic_data->cell_voltages[i];
+        ic_data->cell_voltages[conn_cells] = bq769x0_adc_to_mV(dev_data, adc_raw);
+        sum_voltages += ic_data->cell_voltages[conn_cells];
+        if (ic_data->cell_voltages[conn_cells] > v_max) {
+            v_max = ic_data->cell_voltages[conn_cells];
         }
-        if (ic_data->cell_voltages[i] < v_min && ic_data->cell_voltages[i] > 500) {
-            v_min = ic_data->cell_voltages[i];
+        if (ic_data->cell_voltages[conn_cells] < v_min) {
+            v_min = ic_data->cell_voltages[conn_cells];
         }
+        conn_cells++;
     }
-    ic_data->cell_voltage_avg = sum_voltages / dev_config->used_cell_count;
+    ic_data->connected_cells = conn_cells;
+    ic_data->cell_voltage_avg = sum_voltages / conn_cells;
     ic_data->cell_voltage_min = v_min;
     ic_data->cell_voltage_max = v_max;
 
@@ -546,7 +554,6 @@ static int bq769x0_read_cell_voltages(const struct device *dev, struct bms_ic_da
 #ifdef CONFIG_BMS_IC_POLLING_READ_API
 static int bq769x0_read_total_voltages(const struct device *dev, struct bms_ic_data *ic_data)
 {
-    const struct bms_ic_bq769x0_config *dev_config = dev->config;
     struct bms_ic_bq769x0_data *dev_data = dev->data;
     uint16_t adc_raw;
     int err;
@@ -556,8 +563,8 @@ static int bq769x0_read_total_voltages(const struct device *dev, struct bms_ic_d
         return err;
     }
 
-    ic_data->total_voltage = 4 * dev_data->adc_gain * adc_raw / 1000
-                             + dev_config->used_cell_count * dev_data->adc_offset;
+    ic_data->total_voltage =
+        4 * dev_data->adc_gain * adc_raw / 1000 + ic_data->connected_cells * dev_data->adc_offset;
 
     return 0;
 }
@@ -1060,7 +1067,7 @@ static int bq769x0_set_balancing_switches(const struct device *dev, uint32_t cel
     int err;
 
     for (int section = 0; section < dev_config->num_sections; section++) {
-        uint8_t cells_section = (cells >> section * 5) & 0x1F;
+        uint8_t cells_section = (cells >> section * BQ769X0_SECTION_CELL_COUNT) & 0x1F;
         if (((cells_section << 1) & cells_section) || ((cells_section >> 1) & cells_section)) {
             /* balancing of adjacent cells within one section not allowed */
             return -EINVAL;
@@ -1099,17 +1106,22 @@ static void bq769x0_balancing_work_handler(struct k_work *work)
 
         for (int section = 0; section < dev_config->num_sections; section++) {
             /* find cells which should be balanced and sort them by voltage descending */
-            int cell_list[5];
+            int cell_list[BQ769X0_SECTION_CELL_COUNT];
             int cell_counter = 0;
-            int cells_in_section = MIN(5, dev_config->used_cell_count - section * 5);
-            for (int i = 0; i < cells_in_section; i++) {
-                if ((ic_data->cell_voltages[section * 5 + i] - ic_data->cell_voltage_min)
+            for (int i = 0; i < BQ769X0_SECTION_CELL_COUNT; i++) {
+                int cell_index = section * BQ769X0_SECTION_CELL_COUNT + i;
+
+                if ((dev_config->used_cell_channels & (1 << cell_index)) == 0) {
+                    continue; /* skip unused cell slots */
+                }
+                if ((ic_data->cell_voltages[cell_index] - ic_data->cell_voltage_min)
                     > dev_data->ic_conf.bal_cell_voltage_diff)
                 {
                     int j = cell_counter;
                     while (j > 0
-                           && ic_data->cell_voltages[section * 5 + cell_list[j - 1]]
-                                  < ic_data->cell_voltages[section * 5 + i])
+                           && ic_data->cell_voltages[section * BQ769X0_SECTION_CELL_COUNT
+                                                     + cell_list[j - 1]]
+                                  < ic_data->cell_voltages[cell_index])
                     {
                         cell_list[j] = cell_list[j - 1];
                         j--;
@@ -1133,7 +1145,7 @@ static void bq769x0_balancing_work_handler(struct k_work *work)
                 }
             }
 
-            ic_data->balancing_status |= balancing_flags << section * 5;
+            ic_data->balancing_status |= balancing_flags << (section * BQ769X0_SECTION_CELL_COUNT);
 
             /* set balancing register for this section */
             err = bq769x0_write_byte(dev, BQ769X0_CELLBAL1 + section, balancing_flags);
@@ -1265,7 +1277,7 @@ static int bq769x0_init(const struct device *dev)
     }
 
     dev_data->dev = dev;
-    dev_data->ic_data.connected_cells = dev_config->used_cell_count;
+    dev_data->ic_data.connected_cells = POPCOUNT(dev_config->used_cell_channels);
     dev_data->ic_data.used_thermistors =
         dev_config->num_thermistors + NUM_EXTRA_THERMISTORS(dev_config) - dev_config->num_fet_ntcs;
 
@@ -1339,7 +1351,10 @@ static const struct bms_ic_driver_api bq769x0_driver_api = {
                  "Devicetree properties shunt-resistor-uohm and board-max-current " \
                  "must be greater than 0 for CONFIG_BMS_IC_CURRENT_MONITORING=y")
 
-#define BQ769X0_NUM_SECTIONS(index) ((DT_INST_PROP(index, used_cell_count) + 4) / 5)
+#define BQ769X0_NUM_SECTIONS(index) \
+    ((DT_INST_PROP(index, used_cell_channels) <= 0x001F) \
+         ? 1 \
+         : ((DT_INST_PROP(index, used_cell_channels) <= 0x03FF) ? 2 : 3))
 
 #define DT_SPEC_AND_COMMA(node_id, prop, idx) ADC_DT_SPEC_GET_BY_IDX(node_id, idx)
 
@@ -1362,7 +1377,7 @@ static const struct bms_ic_driver_api bq769x0_driver_api = {
         .shunt_resistor_uohm = DT_INST_PROP_OR(index, shunt_resistor_uohm, 1000), \
         .board_max_current = DT_INST_PROP_OR(index, board_max_current, 0), \
         .thermistor_beta = (float)DT_INST_PROP(index, thermistor_beta), \
-        .used_cell_count = DT_INST_PROP(index, used_cell_count), \
+        .used_cell_channels = DT_INST_PROP(index, used_cell_channels), \
         .num_sections = BQ769X0_NUM_SECTIONS(index), \
         .num_thermistors = MIN(CONFIG_BMS_IC_MAX_THERMISTORS, BQ769X0_NUM_SECTIONS(index)), \
         .num_extra_thermistors = \
